@@ -1,0 +1,185 @@
+# 进阶手册
+
+**简体中文** | [English](advanced.en.md) · [返回 README](../README.md)
+
+[架构](#架构) · [看板设置](#看板设置) · [MCP 工具](#mcp-工具) · [任务状态](#任务状态) · [预算与用量](#预算与用量) · [模型](#模型) · [Worker 工具（MCP）](#worker-工具mcp) · [Worker 插件](#worker-插件) · [配置](#配置) · [共享后台](#共享后台) · [监控](#监控) · [不经 Claude Code 直接运行](#不经-claude-code-直接运行) · [更新与卸载](#更新与卸载) · [已知限制](#已知限制) · [开发与验证](#开发与验证)
+
+## 架构
+
+```
+Claude Code 会话（监督者：规划、下达、验收）                 看板面板（/forge-board）
+   │  MCP stdio：forge_* / sdd_task 工具                          │  function hooks，/api/*
+   ▼                                                              ▼
+agentforge serve（轻量 stdio 转发）──── HTTP ────► agentforge-backend（每个 CLAUDEFORGE_HOME 一个）
+                                                     ├─ 任务存储（~/.claudeforge/tasks）
+                                                     ├─ 看板设置、SDD 文档、插件更新
+                                                     ▼  @cursor/sdk（本机运行）
+                                                   Cursor agent（在 cwd 中改文件、跑命令）
+```
+
+所有 Claude Code 会话和看板都连接同一个后台进程：打开多个会话不会启动多套 worker，派工的会话关闭后任务仍继续执行。Claude Code 负责推理，`forge_*` 调用是动作，状态、结果和验证输出回传给它作为观察。
+
+## 看板设置
+
+| 控件 | 作用 |
+|---|---|
+| 自动派工 | **开**：Claude Code 规划、拆解、下达并验收，执行端负责实现。**关**（默认）：Claude Code 照常工作；明确要求（「交给 Cursor」、`/forge`）仍会派工。 |
+| Hook 状态 | `UserPromptSubmit` Hook 在最近一次修改后运行过即为 `Hook active`；下一条消息生效前为 `Pending`；设置了 `disableAllHooks` 时显示警告。开关已保存不代表 Hook 已运行。 |
+| 执行端 | Cursor，或 Worker 插件（`CLAUDEFORGE_WORKERS`）。切换时清空为上一个执行端选择的模型、强度和权限。 |
+| 模型 | 跟随执行端默认，或从实时目录中选固定模型。执行端离线或目录读取失败会明确提示；已从目录下架的模型保持选中并给出警告，不会静默替换。 |
+| 思考强度 | 只显示目录为该固定模型提供的强度；否则跟随模型默认，不虚构选项。 |
+| 新会话权限 | 执行端支持时显示（Cursor：sandbox、auto-review 或两者）。只在为任务新建 agent 时应用一次，追问沿用；执行端无法应用时拒绝派工。 |
+| SDD 文档 | 任务文档的独立开关、工作区和编辑器。 |
+| 任务 | 最近五个任务和运行中的数量。 |
+| Plugin update | 折叠区，见[更新与卸载](#更新与卸载)。 |
+
+开关从下一条消息生效：Hook 在每条消息前加一行 ON/OFF 说明，是否派工仍由 Claude Code 按任务判断。看板隐藏时暂停轮询；Claude Code 移动端只显示文字。
+
+不用看板时，设置保存在 `~/.claudeforge/delegation.json`，通过后台修改：
+
+```bash
+agentforge on | off
+agentforge config show
+agentforge config set executor=cursor model=gpt-5.5 effort=high permission=sandbox
+agentforge config set model=default effort=default permission=default sdd=false sdd-workspace=/abs/dir
+```
+
+SDD 文档的目录结构：
+
+```
+<workspace>/<project-uuid>/project.json
+<workspace>/<project-uuid>/<task-uuid>/task.md   （目标、范围、计划、验收）
+<workspace>/<project-uuid>/<task-uuid>/meta.json
+```
+
+工作区默认 `~/.claudeforge/sdd`，在看板或用 `config set sdd-workspace=` 设置；Claude Code 可以读取，但不能移动工作区或切换开关。每次保存都带读取时的版本号：期间被改过的文档会以冲突拒绝，看板保留你的草稿。从看板关闭 SDD 时会先保存未提交的草稿，保存失败则保持开启。SDD 关闭后文档仍可读，写入一律拒绝。
+
+## MCP 工具
+
+| 工具 | 用途 |
+|---|---|
+| `forge_capabilities` | 可用 worker、`mcp.json` 中的 MCP 服务器、默认模型、参数与预算，以及看板当前设置。 |
+| `forge_runtime_info` | 各执行端是否在线、默认模型、含强度的模型目录和支持的权限；不提交任何任务。 |
+| `forge_dispatch` | 用任务说明、验收条件和 `verify_command` 启动后台 agent。带 `order_id`（UUID）保证重试幂等。未指定的 `worker` / `model` / 强度 / 权限跟随看板；可选 `mcp_servers`、`max_turns`、`max_minutes`、`max_rework`。agent 启动后返回 `task_id`、`order_status` 和 `conversation_id`。 |
+| `forge_status` | 状态、`order_status`、当前轮次、最近步骤（消息、思考摘要、工具调用），以及 worker 最后一次事件后的 `idleSec`。传 `since` 只取新步骤。 |
+| `forge_wait` | 阻塞到当前轮次结束，每次最多 240 秒；需要继续等就再调一次。 |
+| `forge_followup` | 给同一个 agent 发消息。运行中时尽量插入当前轮次，否则排队；可恢复空闲、被中断或已验收的任务。 |
+| `forge_result` | 最终报告、派工以来的 git 改动（含新文件）和可选 diff。派工前已有改动的文件标记为 `preExisting`。 |
+| `forge_accept` | 运行验证命令。通过即验收；失败则把输出和反馈发回返工，超过 `max_rework` 后判为拒绝。 |
+| `forge_retry` | 对临时错误（`lastError.retryable`），在同一 agent 上重发最近失败或被中断的轮次。 |
+| `forge_cancel` | 停止运行中的轮次。 |
+| `forge_conversations` | 列出执行端的 agent 会话，归档或恢复其中一个。 |
+| `sdd_task` | 读写 SDD 文档：工作区、项目、任务，创建、读取、按版本保存。 |
+| `forge_list` | 最近的任务及其 order id 和状态。 |
+
+status、wait、result 和 cancel 都接受 `task_id` 或 `order_id`。在 Claude Code 中工具全名为 `mcp__plugin_agentforge_agentforge__<工具名>`。
+
+来自 Cursor 的错误带 `error_type` 和 `retryable` 判断：工具错误写在错误文本里，失败的轮次写在 `lastError` 中。判断综合了 SDK 的 `isRetryable`、错误类别（网络或限流）和连接失败信息，因为 SDK 对普通断线也常报 `isRetryable: false`。worker 在 `CLAUDEFORGE_START_TIMEOUT_SEC` 内没有开始运行也按此处理；对该任务 `forge_retry` 会继续等待同一个 agent，不会另开一个。
+
+## 任务状态
+
+`forge_dispatch` 接收 `order_id`：每项工作一个新 UUID。用相同 `order_id` 和参数重试会返回已有任务（`reused: true`），不会启动第二个 agent；相同 id 但参数不同会被拒绝。
+
+每个任务都有 `order_status`：`queued`、`dispatching`、`executing`、`completed`、`failed`、`blocked`（预算用完）、`cancelled` 或 `uncertain`。`uncertain` 表示轮次中途被打断（例如后台在运行中停止）：先检查 agent 会话和实际文件，再用原 `order_id` 查询，不要新建任务。`conversation_id` 是 Cursor agent 的 id，与 order id 不同。
+
+## 预算与用量
+
+每个任务有轮次预算（`max_turns`，默认 20）和 worker 时间预算（`max_minutes`，默认 60，只计算轮次运行的时间）。超出时间预算的轮次会被取消；任一预算用完后，新轮次会被拒绝，并提示 Claude Code 先征求你的同意。`forge_status` 和 `forge_result` 以 `used/max` 显示 `budget`。
+
+`forge_result` 汇总任务各轮次的 token 用量；Cursor 账号提供计费数据时，改用计费总量（以及 `chargedUsd`）。
+
+## 模型
+
+`agentforge models` 列出模型及其参数。看板选择的模型和强度适用于所有未自行指定的派工；其下是默认值 `CLAUDEFORGE_MODEL` 和 `CLAUDEFORGE_MODEL_PARAMS`（`reasoning=high,fast=true`）。单个任务可用 `forge_dispatch` 的 `model` / `model_params` 或 `run --model ... --param id=value` 覆盖。
+
+## Worker 工具（MCP）
+
+worker 可以从 `~/.claudeforge/mcp.json`（或 `CLAUDEFORGE_MCP_CONFIG`）列出的 MCP 服务器获得额外工具。文件使用常见的 `{"mcpServers": {...}}` 格式，条目为 `command`/`args`/`env`（stdio）或 `url`/`headers`（HTTP），`${VAR}` / `${VAR:-default}` 从环境变量填充。按名称为每个任务选择服务器（`mcp_servers: ["github"]`、`run --mcp github`）。任务记录只保存名称，凭据不会写进 `~/.claudeforge/tasks`。示例见 [`examples/mcp.example.json`](../examples/mcp.example.json)。
+
+## Worker 插件
+
+`CLAUDEFORGE_WORKERS` 接收逗号分隔的 ES 模块列表，模块导出 `createWorker(config)`（或默认工厂函数），返回一个 `Worker`（`src/workers/worker.ts`）。插件 worker 会出现在 `forge_capabilities` 和看板中，用 `worker` 选择。示例见 [`examples/workers/echo-worker.mjs`](../examples/workers/echo-worker.mjs)。
+
+## 配置
+
+设置先读环境变量，再读 `CLAUDEFORGE_ENV_FILE` 或 `~/.claudeforge/.env`（复制 [`.env.example`](../.env.example)）。已有的环境变量优先，被修改项目自己的 `.env` 不会被读取。`CLAUDEFORGE_` 前缀和 `~/.claudeforge` 沿用改名前的名字，为兼容保留。
+
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `CURSOR_API_KEY` | - | 未设置时使用 `agentforge login` 保存的 key（`~/.cursor/sdk/auth.json`） |
+| `CURSOR_BACKEND_URL` | Cursor 官方 | 其他 Cursor 后端，由 SDK 读取；API key 必须来自该后端 |
+| `CLAUDEFORGE_WORKER` | `cursor` | 新看板的执行端；之后以看板选择为准 |
+| `CLAUDEFORGE_MODEL` | `composer-2.5` | 执行端默认模型（见 `agentforge models`）；看板选了固定模型时以看板为准 |
+| `CLAUDEFORGE_MODEL_PARAMS` | - | 默认模型参数，`id=value,...`；看板的强度覆盖对应参数 |
+| `CLAUDEFORGE_SETTING_SOURCES` | `project` | worker 加载的 Cursor 设置层（项目规则、AGENTS.md） |
+| `CLAUDEFORGE_AUTO_REVIEW` | 关 | `1` 为工具调用开启 Cursor Auto-review |
+| `CLAUDEFORGE_MAX_TURNS` | `20` | 每个任务的轮次预算 |
+| `CLAUDEFORGE_MAX_TASK_MINUTES` | `60` | 每个任务的 worker 时间预算 |
+| `CLAUDEFORGE_MAX_REWORK` | `3` | 验证失败后的自动返工轮数 |
+| `CLAUDEFORGE_VERIFY_TIMEOUT_SEC` | `900` | 验证命令超时 |
+| `CLAUDEFORGE_STALL_WARN_SEC` | `120` | worker 静默多久后 `forge_status` 提示可能卡住 |
+| `CLAUDEFORGE_START_TIMEOUT_SEC` | `300` | 创建 agent 和每次开始运行的时限 |
+| `CLAUDEFORGE_MCP_CONFIG` | `~/.claudeforge/mcp.json` | worker 可用的 MCP 服务器（绝对路径） |
+| `CLAUDEFORGE_WORKERS` | - | Worker 插件模块，逗号分隔 |
+| `CLAUDEFORGE_ENV_FILE` | `~/.claudeforge/.env` | 设置时文件必须存在 |
+| `CLAUDEFORGE_HOME` | `~/.claudeforge` | 任务记录、事件日志、看板设置、SDD 默认工作区、后台文件 |
+
+## 共享后台
+
+```bash
+agentforge backend status          # pid、端口、版本、启动时间、MCP 会话数、运行中的任务
+agentforge backend restart         # 有任务运行时拒绝；加 --force 强制重启
+agentforge backend stop | start
+```
+
+第一个 MCP 连接或看板会按需启动 `agentforge-backend`；它只监听 127.0.0.1，并使用每个数据目录独立的 bearer token（`~/.claudeforge/backend.token`，权限 0600）。重启后已连接的会话会自动重连。停止后台不会卸载插件；被打断的轮次显示 `uncertain`（`interrupted`），用 `forge_followup` 可在同一个 agent 上续跑。
+
+## 监控
+
+```bash
+agentforge monitor                 # 终端实时视图：↑↓/j k 选择，f 过滤，r 刷新，q 退出
+agentforge monitor --once          # 单次快照（非 TTY 时也是这个）；--json 输出原始数据
+agentforge monitor --web           # 只读网页 http://127.0.0.1:18862（--port 修改端口）
+```
+
+监控按原样读取任务文件和设置：不会启动后台、创建数据目录或修改任务。没有后台响应时，进行中的任务标记 `*`，因为在后台响应前无法确定其真实状态。网页只接受本机 GET 请求。
+
+## 不经 Claude Code 直接运行
+
+```bash
+agentforge run --cwd ~/repo --verify "npm test" "Fix the SAVE10 double discount and add a test"
+echo "Rename the config loader" | agentforge run --cwd ~/repo --json > result.json
+agentforge watch cf-20261023-abc123     # 在另一个终端跟踪任意任务（包括 Claude Code 派发的）
+agentforge tasks | show <task_id>
+```
+
+`run` 实时输出 worker 的步骤，运行 `--verify` 并自动返工，最后打印报告、改动文件、验证结果、预算和 token 用量。任务完成（或带 `--verify` 时验收通过）退出码为 0，失败或被拒绝为 2，无法启动为 1，Ctrl-C 取消轮次为 130。`--json` 让 stdout 只输出结果 JSON，进度写到 stderr。全部选项见 `agentforge run --help`（`--model`、`--param`、`--mcp`、`--worker`、`--max-turns`、`--max-minutes` 等）。可运行的演示见 [`examples/`](../examples/README.md)。
+
+## 更新与卸载
+
+看板的 **Plugin update** 区，或 `agentforge update status|check|apply`，从 `origin` 更新本仓库。打开看板时每天最多检查一次（多个看板共享）；**Check for updates** 立即检查；查看状态只读本地缓存。`origin` 必须是 `package.json` 中登记的仓库（改名前的 `bard1124/ClaudeForge` 也算）。
+
+更新即快进当前分支，然后执行 `npm ci`、`npm run build` 并重装插件。只有已跟踪文件干净、分支可快进且没有运行中的任务时才执行；有本地改动、分叉、离线或任务忙碌时会阻止并说明原因。不会 stash、reset、强推，也不会动 SDD 文档等未跟踪文件。依赖安装或重装失败时，**Retry install** 从该步骤继续。完成后重启后台（看板会提供按钮），并运行 `/reload-plugins`。
+
+`agentforge uninstall [--claude <path>]` 移除插件和 marketplace（以及残留的 ClaudeForge 安装）；`~/.claudeforge` 中的任务记录和设置保留。
+
+## 已知限制
+
+- worker 运行在共享后台中。关闭 Claude Code 会话不会停止它们；运行中停止或重启后台会打断，任务显示 `uncertain`，直到用 `forge_followup` 在同一个 Cursor agent 上续跑。
+- 看板需要 Claude Code 的 function hooks（`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`，早期功能）。没有它时，工具、提示 Hook 和 `agentforge config` 仍可用。
+- `verify_command` 由系统 shell 执行：macOS 是 `/bin/sh`，Windows 是 `cmd.exe`。需要跨平台时写成 `npm test`、`node ...` 这类两边都能跑的命令。
+- Windows 上插件更新用 `npm install` 而不是 `npm ci`，因为后台已加载的原生模块会被系统锁定，无法删除 `node_modules`。
+- Hook 说明是给 Claude Code 的建议，不是锁：开启自动派工时它仍可能自己回答问题或做很小的改动，关闭时你要求仍会派工。
+- 同一 `cwd` 中并行的任务可能互相覆盖改动。`forge_dispatch` 会警告，但不会阻止。
+- Cursor worker 以你的用户权限运行，请像对待 Cursor 的 agent 模式一样信任它。
+- 启动 Cursor agent 通常需要 10-60 秒，挂载 MCP 服务器时曾需要数分钟。`forge_dispatch` 在 agent 启动后返回，`CLAUDEFORGE_START_TIMEOUT_SEC` 限制等待时长。
+- 计费总量取决于 Cursor 账号；没有用量 API 的账号只显示 token 数。
+
+## 开发与验证
+
+```bash
+npm test            # 使用假 worker 的单元测试
+npm run dev         # tsc --watch
+node dist/cli.js install && claude plugin test ~/.claudeforge/marketplace/agentforge   # 看板面板测试
+(cd plugin && npx -p typescript@5 tsc -p tsconfig.json)   # 看板类型检查；先把 claude-code.d.ts 复制到 plugin/.claude-plugin/types/claude-code/index.d.ts
+```

@@ -1,0 +1,45 @@
+{
+  "name": "agentforge",
+  "version": "0.5.0",
+  "description": "Let Claude Code dispatch work to Cursor agents, then track progress, follow up, and accept results from the same session.",
+  "type": "module",
+  "bin": {
+    "agentforge": "dist/cli.js",
+    "claudeforge": "dist/cli.js"
+  },
+  "main": "dist/server.js",
+  "files": [
+    "dist",
+    "commands",
+    "plugin",
+    "examples",
+    ".env.example"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
+    "dev": "tsc -p tsconfig.json --watch",
+    "test": "npm run build && vitest run src",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "monitor": "node dist/cli.js monitor",
+    "dashboard": "node dist/cli.js monitor --web"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bard1124/AgentForge.git"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "@cursor/sdk": "^1.0.40",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.12"
+  }
+}
