@@ -8,8 +8,6 @@ Claude Code 多 Agent 派工插件：Claude 做「指挥官 + 验收官」，负
 
 在 Claude Code 里提需求，把具体工作交给后台的 Cursor agent，再回到同一个会话查看进度、继续追问、验收产物。派工开关默认关闭；关闭时继续按原来的方式使用 Claude Code。
 
-> **从 ClaudeForge 升级？** 0.5 起改名为 AgentForge，重新运行一次 `install` 即可迁移，见[从 ClaudeForge 升级](#从-claudeforge-升级)。
-
 [分工与选型](#分工与选型) · [安装与接入](#安装与接入) · [第一次派工](#第一次派工) · [日常使用](#日常使用) · [常见问题](#常见问题) · [支持范围](#支持范围) · [进阶手册](docs/advanced.md)
 
 ## 它帮你完成什么

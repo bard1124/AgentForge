@@ -8,8 +8,6 @@ AgentForge is a Claude Code plugin that makes Claude the commander and reviewer 
 
 State the requirement in Claude Code, let a Cursor agent do the hands-on work, and stay in the same session to check progress, ask follow-up questions, and accept the result. Auto-dispatch is off by default; while it is off, Claude Code works as usual.
 
-> **Upgrading from ClaudeForge?** The project was renamed in 0.5. Run `install` once more to migrate; see [Upgrading from ClaudeForge](#upgrading-from-claudeforge).
-
 [Roles](#roles) · [Quick start](#quick-start) · [First dispatch](#first-dispatch) · [Daily use](#daily-use) · [FAQ](#faq) · [Scope](#scope) · [Advanced guide](docs/advanced.en.md)
 
 ## What it does
