@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "ci/**"]
   pull_request:
 
 jobs:
@@ -21,3 +21,22 @@ jobs:
       - run: git config --global user.name ci && git config --global user.email ci@example.com
       - run: npm ci --no-audit --no-fund
       - run: npm test
+
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: git config --global user.name ci && git config --global user.email ci@example.com
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - run: npm install -g @anthropic-ai/claude-code
+      - run: claude --version
+      - run: node scripts/smoke.mjs
