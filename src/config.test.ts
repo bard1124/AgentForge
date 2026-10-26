@@ -22,7 +22,7 @@ describe("loadEnvFiles", () => {
     fs.writeFileSync(path.join(home, ".env"), "CF_ENV_A=file\nCF_ENV_B=file\n");
     process.env.CF_ENV_A = "shell";
     try {
-      expect(loadEnvFiles({ CLAUDEFORGE_HOME: home })).toBe(path.join(home, ".env"));
+      expect(loadEnvFiles({ AGENTFORGE_HOME: home })).toBe(path.join(home, ".env"));
       expect(process.env.CF_ENV_A).toBe("shell");
       expect(process.env.CF_ENV_B).toBe("file");
     } finally {
@@ -33,19 +33,24 @@ describe("loadEnvFiles", () => {
   });
 
   it("is a no-op without a file but fails loudly on an explicit missing file", () => {
-    expect(loadEnvFiles({ CLAUDEFORGE_HOME: "/nonexistent-cf-home" })).toBeUndefined();
-    expect(() => loadEnvFiles({ CLAUDEFORGE_ENV_FILE: "/nonexistent.env" })).toThrow(/not found/);
+    expect(loadEnvFiles({ AGENTFORGE_HOME: "/nonexistent-cf-home" })).toBeUndefined();
+    expect(() => loadEnvFiles({ AGENTFORGE_ENV_FILE: "/nonexistent.env" })).toThrow(/not found/);
   });
 });
 
 describe("worker defaults", () => {
-  it("read CLAUDEFORGE_* and treat empty values as unset", () => {
-    expect(loadConfig({ CLAUDEFORGE_MODEL: "env-model", CLAUDEFORGE_WORKER: "echo", CLAUDEFORGE_MODEL_PARAMS: "reasoning=high" })).toMatchObject({
+  it("read AGENTFORGE_* and treat empty values as unset", () => {
+    expect(loadConfig({ AGENTFORGE_MODEL: "env-model", CLAUDEFORGE_WORKER: "echo", AGENTFORGE_MODEL_PARAMS: "reasoning=high" })).toMatchObject({
       model: "env-model",
       worker: "echo",
       modelParams: [{ id: "reasoning", value: "high" }],
     });
-    expect(loadConfig({ CLAUDEFORGE_MODEL: "", CLAUDEFORGE_WORKER: " " })).toMatchObject({ model: "composer-2.5", worker: "cursor" });
+    expect(loadConfig({ AGENTFORGE_MODEL: "", CLAUDEFORGE_WORKER: " " })).toMatchObject({ model: "composer-2.5", worker: "cursor" });
+  });
+
+  it("prefer AGENTFORGE_* over the pre-rename CLAUDEFORGE_* names", () => {
+    expect(loadConfig({ AGENTFORGE_MAX_TURNS: "5", CLAUDEFORGE_MAX_TURNS: "9", CLAUDEFORGE_MAX_REWORK: "1" })).toMatchObject({ maxTurns: 5, maxRework: 1 });
+    expect(loadConfig({ AGENTFORGE_HOME: "/new", CLAUDEFORGE_HOME: "/old" }).home).toBe("/new");
   });
 });
 

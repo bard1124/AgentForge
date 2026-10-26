@@ -7,8 +7,8 @@ describe("commandLine", () => {
   });
 
   it.runIf(isWindows)("quotes .cmd shims for cmd.exe on Windows", () => {
-    expect(commandLine("claude", ["plugin", "marketplace", "add", "C:\\Users\\A B\\.claudeforge\\marketplace", 'say "hi"'])).toEqual({
-      file: 'claude plugin marketplace add "C:\\Users\\A B\\.claudeforge\\marketplace" "say ""hi"""',
+    expect(commandLine("claude", ["plugin", "marketplace", "add", "C:\\Users\\A B\\.agentforge\\marketplace", 'say "hi"'])).toEqual({
+      file: 'claude plugin marketplace add "C:\\Users\\A B\\.agentforge\\marketplace" "say ""hi"""',
       args: [],
       shell: true,
     });

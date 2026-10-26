@@ -9,7 +9,7 @@ import { heartbeatFile, promptContext, readDelegation } from "./delegation.js";
  */
 function main(): void {
   const i = process.argv.indexOf("--home");
-  const home = i >= 0 ? process.argv[i + 1] : process.env.CLAUDEFORGE_HOME;
+  const home = i >= 0 ? process.argv[i + 1] : (process.env.AGENTFORGE_HOME ?? process.env.CLAUDEFORGE_HOME);
   let input: { session_id?: string; cwd?: string } = {};
   try {
     input = JSON.parse(fs.readFileSync(0, "utf8") || "{}");

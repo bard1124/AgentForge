@@ -10,8 +10,8 @@
 Claude Code sessions (supervisor: plan, brief, review)        board pane (/forge-board)
    │  MCP stdio: forge_* / sdd_task tools                         │  function hooks, /api/*
    ▼                                                              ▼
-agentforge serve (thin stdio relay) ──── HTTP ────► agentforge-backend (one per CLAUDEFORGE_HOME)
-                                                     ├─ task store (~/.claudeforge/tasks)
+agentforge serve (thin stdio relay) ──── HTTP ────► agentforge-backend (one per AGENTFORGE_HOME)
+                                                     ├─ task store (~/.agentforge/tasks)
                                                      ├─ board settings, SDD documents, plugin updater
                                                      ▼  @cursor/sdk (local runtime)
                                                    Cursor agent (edits files, runs commands in cwd)
@@ -25,7 +25,7 @@ Every Claude Code session and the board talk to one shared background process, s
 |---|---|
 | Auto-dispatch | **ON**: Claude Code plans, splits, briefs, and accepts; the executor implements. **OFF** (default): Claude Code works as usual; explicit requests ("hand this to Cursor", `/forge`) still dispatch. |
 | Hook state | `Hook active` once the `UserPromptSubmit` hook has run since the last change; `Pending` until the next message picks it up; a warning when `disableAllHooks` is set. A saved switch is not proof that the hook ran. |
-| Executor | Cursor, or a worker plugin (`CLAUDEFORGE_WORKERS`). Switching clears the model, effort, and permission chosen for the previous one. |
+| Executor | Cursor, or a worker plugin (`AGENTFORGE_WORKERS`). Switching clears the model, effort, and permission chosen for the previous one. |
 | Model | Follow the executor default, or a fixed model from its live catalog. An offline executor or a failed catalog read is reported; a model that left the catalog stays selected with a warning instead of being swapped silently. |
 | Thinking effort | Only the efforts the catalog lists for the fixed model; otherwise the model default. Nothing is invented. |
 | New-session permission | Shown when the executor supports it (Cursor: sandbox, auto-review, both). Applies once, when a new agent is created for a task; follow-ups keep it. A permission the executor cannot apply blocks the dispatch. |
@@ -35,7 +35,7 @@ Every Claude Code session and the board talk to one shared background process, s
 
 The switch takes effect from the next message: the hook adds a one-line ON/OFF note to each prompt, and Claude Code still decides per task whether delegating fits. The board pauses polling while hidden; on Claude Code mobile it is text only.
 
-Without the board the settings live in `~/.claudeforge/delegation.json` and change through the backend:
+Without the board the settings live in `~/.agentforge/delegation.json` and change through the backend:
 
 ```bash
 agentforge on | off
@@ -52,7 +52,7 @@ SDD documents are laid out as:
 <workspace>/<project-uuid>/<task-uuid>/meta.json
 ```
 
-The workspace defaults to `~/.claudeforge/sdd` and is set on the board or with `config set sdd-workspace=`; Claude Code can read it but never move it or flip the switch. Every save carries the revision it was read at: a document changed since then is refused with a conflict, and the board keeps your draft. Turning SDD off from the board saves a pending draft first, and stays on if that save fails. With SDD off, documents stay readable and every write is refused.
+The workspace defaults to `~/.agentforge/sdd` and is set on the board or with `config set sdd-workspace=`; Claude Code can read it but never move it or flip the switch. Every save carries the revision it was read at: a document changed since then is refused with a conflict, and the board keeps your draft. Turning SDD off from the board saves a pending draft first, and stays on if that save fails. With SDD off, documents stay readable and every write is refused.
 
 ## MCP tools
 
@@ -74,7 +74,7 @@ The workspace defaults to `~/.claudeforge/sdd` and is set on the board or with `
 
 Status, wait, result, and cancel take `task_id` or `order_id`. In Claude Code the tools are named `mcp__plugin_agentforge_agentforge__<tool>`.
 
-Errors from Cursor carry `error_type` and a `retryable` verdict: tool errors in the error text, failed turns in `lastError`. The verdict combines the SDK's `isRetryable` flag, the error class (network or rate limit), and connection-failure messages, because the SDK often reports `isRetryable: false` on plain connection drops. A worker that has not started its run within `CLAUDEFORGE_START_TIMEOUT_SEC` fails the same way; `forge_retry` keeps waiting on the same agent instead of opening a second one.
+Errors from Cursor carry `error_type` and a `retryable` verdict: tool errors in the error text, failed turns in `lastError`. The verdict combines the SDK's `isRetryable` flag, the error class (network or rate limit), and connection-failure messages, because the SDK often reports `isRetryable: false` on plain connection drops. A worker that has not started its run within `AGENTFORGE_START_TIMEOUT_SEC` fails the same way; `forge_retry` keeps waiting on the same agent instead of opening a second one.
 
 ## Task states
 
@@ -90,39 +90,39 @@ Each task has a turn budget (`max_turns`, default 20) and a worker time budget (
 
 ## Models
 
-`agentforge models` lists the models and their parameters. The board's model and effort apply to every dispatch that does not name its own; below that, `CLAUDEFORGE_MODEL` and `CLAUDEFORGE_MODEL_PARAMS` (`reasoning=high,fast=true`) are the defaults. Override per task with `forge_dispatch`'s `model` / `model_params` or `run --model ... --param id=value`.
+`agentforge models` lists the models and their parameters. The board's model and effort apply to every dispatch that does not name its own; below that, `AGENTFORGE_MODEL` and `AGENTFORGE_MODEL_PARAMS` (`reasoning=high,fast=true`) are the defaults. Override per task with `forge_dispatch`'s `model` / `model_params` or `run --model ... --param id=value`.
 
 ## Worker tools (MCP)
 
-Workers can get extra tools from MCP servers listed in `~/.claudeforge/mcp.json` (or `CLAUDEFORGE_MCP_CONFIG`). The file takes the usual `{"mcpServers": {...}}` shape with `command`/`args`/`env` (stdio) or `url`/`headers` (HTTP) entries, and `${VAR}` / `${VAR:-default}` references are filled from the environment. Pick servers per task by name (`mcp_servers: ["github"]`, `run --mcp github`). Task records store only the names, so credentials stay out of `~/.claudeforge/tasks`. See [`examples/mcp.example.json`](../examples/mcp.example.json).
+Workers can get extra tools from MCP servers listed in `~/.agentforge/mcp.json` (or `AGENTFORGE_MCP_CONFIG`). The file takes the usual `{"mcpServers": {...}}` shape with `command`/`args`/`env` (stdio) or `url`/`headers` (HTTP) entries, and `${VAR}` / `${VAR:-default}` references are filled from the environment. Pick servers per task by name (`mcp_servers: ["github"]`, `run --mcp github`). Task records store only the names, so credentials stay out of `~/.agentforge/tasks`. See [`examples/mcp.example.json`](../examples/mcp.example.json).
 
 ## Worker plugins
 
-`CLAUDEFORGE_WORKERS` takes a comma-separated list of ES modules that export `createWorker(config)` (or a default factory) returning a `Worker` (`src/workers/worker.ts`). Plugin workers appear in `forge_capabilities` and on the board, and are chosen with `worker`. See [`examples/workers/echo-worker.mjs`](../examples/workers/echo-worker.mjs).
+`AGENTFORGE_WORKERS` takes a comma-separated list of ES modules that export `createWorker(config)` (or a default factory) returning a `Worker` (`src/workers/worker.ts`). Plugin workers appear in `forge_capabilities` and on the board, and are chosen with `worker`. See [`examples/workers/echo-worker.mjs`](../examples/workers/echo-worker.mjs).
 
 ## Configuration
 
-Settings come from the environment first, then from `CLAUDEFORGE_ENV_FILE` or `~/.claudeforge/.env` (copy [`.env.example`](../.env.example)). Existing environment variables win, and the worked-on project's `.env` is never read. The `CLAUDEFORGE_` prefix and `~/.claudeforge` predate the rename and stay for compatibility.
+Settings come from the environment first, then from `AGENTFORGE_ENV_FILE` or `~/.agentforge/.env` (copy [`.env.example`](../.env.example)). Existing environment variables win, and the worked-on project's `.env` is never read.
 
 | Env var | Default | |
 |---|---|---|
 | `CURSOR_API_KEY` | - | Otherwise the key from `agentforge login` (`~/.cursor/sdk/auth.json`) is used |
 | `CURSOR_BACKEND_URL` | Cursor's | Alternative Cursor backend, read by the SDK; the API key must come from that backend |
-| `CLAUDEFORGE_WORKER` | `cursor` | Executor for a fresh board; the board's choice wins afterwards |
-| `CLAUDEFORGE_MODEL` | `composer-2.5` | Executor default model (see `agentforge models`); a fixed model on the board wins |
-| `CLAUDEFORGE_MODEL_PARAMS` | - | Default model parameters, `id=value,...`; the board's effort wins for its parameter |
-| `CLAUDEFORGE_SETTING_SOURCES` | `project` | Cursor settings layers the worker loads (project rules, AGENTS.md) |
-| `CLAUDEFORGE_AUTO_REVIEW` | off | `1` enables Cursor Auto-review for tool calls |
-| `CLAUDEFORGE_MAX_TURNS` | `20` | Turn budget per task |
-| `CLAUDEFORGE_MAX_TASK_MINUTES` | `60` | Worker time budget per task |
-| `CLAUDEFORGE_MAX_REWORK` | `3` | Automatic rework rounds after a failed verification |
-| `CLAUDEFORGE_VERIFY_TIMEOUT_SEC` | `900` | Timeout of the verification command |
-| `CLAUDEFORGE_STALL_WARN_SEC` | `120` | Silence after which `forge_status` hints that the worker may be stalled |
-| `CLAUDEFORGE_START_TIMEOUT_SEC` | `300` | Limit for creating the agent and for starting each run |
-| `CLAUDEFORGE_MCP_CONFIG` | `~/.claudeforge/mcp.json` | MCP servers workers may use (absolute path) |
-| `CLAUDEFORGE_WORKERS` | - | Worker plugin modules, comma separated |
-| `CLAUDEFORGE_ENV_FILE` | `~/.claudeforge/.env` | Must exist when set |
-| `CLAUDEFORGE_HOME` | `~/.claudeforge` | Task records, event logs, board settings, SDD workspace default, backend files |
+| `AGENTFORGE_WORKER` | `cursor` | Executor for a fresh board; the board's choice wins afterwards |
+| `AGENTFORGE_MODEL` | `composer-2.5` | Executor default model (see `agentforge models`); a fixed model on the board wins |
+| `AGENTFORGE_MODEL_PARAMS` | - | Default model parameters, `id=value,...`; the board's effort wins for its parameter |
+| `AGENTFORGE_SETTING_SOURCES` | `project` | Cursor settings layers the worker loads (project rules, AGENTS.md) |
+| `AGENTFORGE_AUTO_REVIEW` | off | `1` enables Cursor Auto-review for tool calls |
+| `AGENTFORGE_MAX_TURNS` | `20` | Turn budget per task |
+| `AGENTFORGE_MAX_TASK_MINUTES` | `60` | Worker time budget per task |
+| `AGENTFORGE_MAX_REWORK` | `3` | Automatic rework rounds after a failed verification |
+| `AGENTFORGE_VERIFY_TIMEOUT_SEC` | `900` | Timeout of the verification command |
+| `AGENTFORGE_STALL_WARN_SEC` | `120` | Silence after which `forge_status` hints that the worker may be stalled |
+| `AGENTFORGE_START_TIMEOUT_SEC` | `300` | Limit for creating the agent and for starting each run |
+| `AGENTFORGE_MCP_CONFIG` | `~/.agentforge/mcp.json` | MCP servers workers may use (absolute path) |
+| `AGENTFORGE_WORKERS` | - | Worker plugin modules, comma separated |
+| `AGENTFORGE_ENV_FILE` | `~/.agentforge/.env` | Must exist when set |
+| `AGENTFORGE_HOME` | `~/.agentforge` | Task records, event logs, board settings, SDD workspace default, backend files |
 
 ## Backend
 
@@ -132,7 +132,7 @@ agentforge backend restart         # refused while tasks run; --force to restart
 agentforge backend stop | start
 ```
 
-The first MCP connection or board starts `agentforge-backend` on demand; it listens on 127.0.0.1 with a per-home bearer token (`~/.claudeforge/backend.token`, mode 0600). Connected sessions reconnect on their own after a restart. Stopping the backend does not uninstall the plugin; a turn it was running shows `uncertain` (`interrupted`) and `forge_followup` resumes the same agent.
+The first MCP connection or board starts `agentforge-backend` on demand; it listens on 127.0.0.1 with a per-home bearer token (`~/.agentforge/backend.token`, mode 0600). Connected sessions reconnect on their own after a restart. Stopping the backend does not uninstall the plugin; a turn it was running shows `uncertain` (`interrupted`) and `forge_followup` resumes the same agent.
 
 ## Monitor
 
@@ -157,11 +157,11 @@ agentforge tasks | show <task_id>
 
 ## Updates and uninstall
 
-The board's **Plugin update** section, or `agentforge update status|check|apply`, updates this checkout from `origin`. Opening the board checks at most once a day (shared across boards); **Check for updates** checks right away; viewing the status only reads the local cache. `origin` must be the repository named in `package.json` (a clone of the pre-rename `bard1124/ClaudeForge` counts).
+The board's **Plugin update** section, or `agentforge update status|check|apply`, updates this checkout from `origin`. Opening the board checks at most once a day (shared across boards); **Check for updates** checks right away; viewing the status only reads the local cache. `origin` must be the repository named in `package.json`.
 
 An update is a fast-forward of the current branch followed by `npm ci`, `npm run build`, and a reinstall of the plugin. It runs only when tracked files are clean, the branch can fast-forward, and no task is running; local changes, a diverged branch, being offline, or busy tasks block it with the reason. It never stashes, resets, force-pushes, or touches untracked files such as SDD documents. If dependencies or the reinstall failed, **Retry install** resumes from that step. Afterwards restart the backend (the board offers it) and run `/reload-plugins`.
 
-`agentforge uninstall [--claude <path>]` removes the plugin and its marketplace (and any leftover ClaudeForge install); task records and settings in `~/.claudeforge` stay.
+`agentforge uninstall [--claude <path>]` removes the plugin and its marketplace; task records and settings in `~/.agentforge` stay.
 
 ## Limitations
 
@@ -172,7 +172,7 @@ An update is a fast-forward of the current branch followed by `npm ci`, `npm run
 - The hook note is advice to Claude Code, not a lock: with auto-dispatch on it may still answer questions or make trivial edits itself, and with it off it still delegates when you ask.
 - Parallel tasks in the same `cwd` can overwrite each other's edits. `forge_dispatch` warns about this but does not prevent it.
 - The Cursor worker runs with the permissions of your user account. Give it the same trust you would give Cursor's agent mode.
-- Starting a Cursor agent usually takes 10-60s, and with MCP servers attached it has taken several minutes. `forge_dispatch` returns once the agent has started, and `CLAUDEFORGE_START_TIMEOUT_SEC` bounds the wait.
+- Starting a Cursor agent usually takes 10-60s, and with MCP servers attached it has taken several minutes. `forge_dispatch` returns once the agent has started, and `AGENTFORGE_START_TIMEOUT_SEC` bounds the wait.
 - Billing totals depend on the Cursor account; accounts without the usage API show token counts only.
 
 ## Development
@@ -180,6 +180,6 @@ An update is a fast-forward of the current branch followed by `npm ci`, `npm run
 ```bash
 npm test            # unit tests with a fake worker
 npm run dev         # tsc --watch
-node dist/cli.js install && claude plugin test ~/.claudeforge/marketplace/agentforge   # board pane tests
+node dist/cli.js install && claude plugin test ~/.agentforge/marketplace/agentforge   # board pane tests
 (cd plugin && npx -p typescript@5 tsc -p tsconfig.json)   # type-check the board; copy claude-code.d.ts to plugin/.claude-plugin/types/claude-code/index.d.ts first
 ```

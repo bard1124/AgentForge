@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Cursor } from "@cursor/sdk";
-import { type ForgeConfig, loadConfig, loadEnvFiles } from "./config.js";
+import { envVar, type ForgeConfig, HOME_DIR, LEGACY_HOME_DIR, loadConfig, loadEnvFiles } from "./config.js";
 import { type DelegationChange, delegationFile, readDelegation, writeDelegation } from "./delegation.js";
 import { out, routeConsoleToStderr } from "./output.js";
 import { commandLine, isWindows } from "./platform.js";
@@ -16,7 +16,7 @@ const HELP = `AgentForge - let Claude Code dispatch work to Cursor agents.
 Usage:
   agentforge serve                 MCP on stdio, relayed to the shared backend (what Claude Code launches)
   agentforge backend status|start|stop|restart [--force]
-                                    Manage the shared agentforge-backend (one per CLAUDEFORGE_HOME)
+                                    Manage the shared agentforge-backend (one per AGENTFORGE_HOME)
   agentforge run [options] <task>  Dispatch a task without Claude Code and stream it (run --help)
   agentforge watch <task_id>       Follow a task's steps live from another terminal
   agentforge monitor [--once | --json | --web [--port 18862]] [--limit n]
@@ -37,16 +37,17 @@ Usage:
   agentforge update [status|check|apply]
                                     Plugin updates from origin: fast-forward only, never with local changes or running tasks
 
-Configuration is read from the environment, then from CLAUDEFORGE_ENV_FILE or
-~/.claudeforge/.env (see .env.example). Main variables:
+Configuration is read from the environment, then from AGENTFORGE_ENV_FILE or
+~/.agentforge/.env (see .env.example). Main variables:
   CURSOR_API_KEY                    Cursor API key (otherwise uses \`agentforge login\`)
-  CLAUDEFORGE_MODEL                 Default worker model (composer-2.5)
-  CLAUDEFORGE_MODEL_PARAMS          Default model parameters, e.g. reasoning=high
-  CLAUDEFORGE_MAX_TURNS             Turn budget per task (20)
-  CLAUDEFORGE_MAX_TASK_MINUTES      Worker time budget per task (60)
-  CLAUDEFORGE_MCP_CONFIG            MCP servers workers may use (~/.claudeforge/mcp.json)
-  CLAUDEFORGE_WORKERS               Extra worker plugin modules, comma separated
-  CLAUDEFORGE_HOME                  State directory (~/.claudeforge)
+  AGENTFORGE_MODEL                  Default worker model (composer-2.5)
+  AGENTFORGE_MODEL_PARAMS           Default model parameters, e.g. reasoning=high
+  AGENTFORGE_MAX_TURNS              Turn budget per task (20)
+  AGENTFORGE_MAX_TASK_MINUTES       Worker time budget per task (60)
+  AGENTFORGE_MCP_CONFIG             MCP servers workers may use (~/.agentforge/mcp.json)
+  AGENTFORGE_WORKERS                Extra worker plugin modules, comma separated
+  AGENTFORGE_HOME                   State directory (~/.agentforge)
+The pre-rename CLAUDEFORGE_* names still apply when the AGENTFORGE_* one is unset.
 `;
 
 function flag(args: string[], name: string): string | undefined {
@@ -127,7 +128,7 @@ function writeMarketplace(home: string): string {
   fs.mkdirSync(path.join(pluginDir, "commands"), { recursive: true });
   fs.copyFileSync(path.join(root, "commands", "forge.md"), path.join(pluginDir, "commands", "forge.md"));
 
-  const env: Record<string, string> = { NODE_NO_WARNINGS: "1", CLAUDEFORGE_HOME: home };
+  const env: Record<string, string> = { NODE_NO_WARNINGS: "1", AGENTFORGE_HOME: home };
   const mcp = { agentforge: { command: process.execPath, args: [entry, "serve"], env } };
   fs.writeFileSync(path.join(pluginDir, ".mcp.json"), `${JSON.stringify(mcp, null, 2)}\n`);
 
@@ -146,6 +147,29 @@ function writeMarketplace(home: string): string {
   const marketplace = { name: MARKETPLACE, owner: { name: "AgentForge" }, plugins: [{ name: "agentforge", displayName, source: "./agentforge", version, description }] };
   fs.writeFileSync(path.join(dir, ".claude-plugin", "marketplace.json"), `${JSON.stringify(marketplace, null, 2)}\n`);
   return dir;
+}
+
+/** Moves the pre-0.5.1 data directory to ~/.agentforge once, unless a home is set explicitly. */
+async function migrateHome(home: string, force: boolean): Promise<string> {
+  if (home !== LEGACY_HOME_DIR || envVar(process.env, "HOME") || fs.existsSync(HOME_DIR)) return home;
+  const backend = await import("./backend.js");
+  const status = await backend.backendRequest<{ running: string[] }>(home, "GET", "/api/status").catch(() => undefined);
+  if (status?.running.length && !force) {
+    throw new Error(`Tasks still running: ${status.running.join(", ")}. install moves ${home} to ${HOME_DIR} and stops the backend; wait, or pass --force.`);
+  }
+  await backend.stopBackend(home);
+  fs.renameSync(home, HOME_DIR);
+  if (fs.existsSync(delegationFile(HOME_DIR))) {
+    const { settings, corrupt } = readDelegation(HOME_DIR);
+    const workspace = settings.sdd.workspace;
+    if (!corrupt && (workspace === home || workspace.startsWith(home + path.sep))) {
+      writeDelegation(HOME_DIR, { ...settings, sdd: { ...settings.sdd, workspace: HOME_DIR + workspace.slice(home.length) } });
+    }
+  }
+  // The marketplace was registered at its old path.
+  claude(["plugin", "marketplace", "remove", MARKETPLACE], true);
+  out(`Moved ${home} to ${HOME_DIR}.`);
+  return HOME_DIR;
 }
 
 function install(args: string[], home: string): void {
@@ -316,7 +340,7 @@ async function main(): Promise<number> {
   switch (cmd) {
     case "serve": {
       const { serveStdio } = await import("./proxy.js");
-      await serveStdio(config.home, process.env.CLAUDEFORGE_DEFAULT_CWD ?? process.cwd());
+      await serveStdio(config.home, (process.env.AGENTFORGE_DEFAULT_CWD ?? process.env.AGENTFORGE_DEFAULT_CWD) ?? process.cwd());
       return -1;
     }
     case "backend":
@@ -373,7 +397,7 @@ async function main(): Promise<number> {
     }
     case "install":
       claudeCli = claudeBin(args, config.home);
-      install(args, config.home);
+      install(args, await migrateHome(config.home, args.includes("--force")));
       return 0;
     case "uninstall":
       claudeCli = claudeBin(args, config.home);

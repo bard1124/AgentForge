@@ -28,7 +28,7 @@ if [[ "${1:-}" == "--claude" ]]; then
 fi
 
 if [[ "${WORKER:-cursor}" == "echo" ]]; then
-  export CLAUDEFORGE_WORKERS="$root/examples/workers/echo-worker.mjs"
+  export AGENTFORGE_WORKERS="$root/examples/workers/echo-worker.mjs"
   exec node "$root/dist/cli.js" run --cwd "$work" --worker echo "$task"
 fi
 

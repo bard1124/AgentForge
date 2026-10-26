@@ -13,7 +13,7 @@ function run(args: string[], input?: string) {
   const res = spawnSync(process.execPath, ["--no-warnings", cli, ...args], {
     encoding: "utf8",
     input,
-    env: { ...process.env, CLAUDEFORGE_HOME: home, CLAUDEFORGE_WORKERS: plugin, NO_COLOR: "1" },
+    env: { ...process.env, AGENTFORGE_HOME: home, AGENTFORGE_WORKERS: plugin, NO_COLOR: "1" },
   });
   return { code: res.status, out: res.stdout, err: res.stderr };
 }

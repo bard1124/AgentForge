@@ -67,7 +67,7 @@ node dist/cli.js whoami       # check the sign-in
 node dist/cli.js models       # list models and their parameters
 ```
 
-Instead of signing in you can set the `CURSOR_API_KEY` environment variable or put it in `~/.claudeforge/.env` (`%USERPROFILE%\.claudeforge\.env` on Windows; see [`.env.example`](.env.example)).
+Instead of signing in you can set the `CURSOR_API_KEY` environment variable or put it in `~/.agentforge/.env` (`%USERPROFILE%\.agentforge\.env` on Windows; see [`.env.example`](.env.example)).
 
 ### 3. Install the plugin and board
 
@@ -107,11 +107,11 @@ With auto-dispatch off, `/forge <task>` or "hand this to Cursor" still dispatche
 | Off (default) | Claude Code works as usual and does not dispatch on its own |
 | Off, but you ask | "Hand this to Cursor" or `/forge` still dispatches |
 
-Settings apply to every session sharing the data directory (`~/.claudeforge`). New tasks use the current settings; existing tasks and follow-ups keep their agent's. Without the board: `agentforge on | off`, `agentforge config show`, `agentforge config set key=value ...`.
+Settings apply to every session sharing the data directory (`~/.agentforge`). New tasks use the current settings; existing tasks and follow-ups keep their agent's. Without the board: `agentforge on | off`, `agentforge config show`, `agentforge config set key=value ...`.
 
 Ask in the same session: "How's the Cursor task going?", "Ask it why it changed the DTO", "Show me the diff and accept it if tests pass", "Cancel that task". Turning auto-dispatch off or closing the board or the session never cancels running work; ask for a cancel.
 
-- **SDD task documents**: with SDD on (default), Claude Code saves each task's goal, scope, plan, and acceptance as a `task.md` (`~/.claudeforge/sdd` by default) before dispatching and hands the path to the agent. Saves are checked against the revision read, so a concurrent edit is refused instead of overwritten.
+- **SDD task documents**: with SDD on (default), Claude Code saves each task's goal, scope, plan, and acceptance as a `task.md` (`~/.agentforge/sdd` by default) before dispatching and hands the path to the agent. Saves are checked against the revision read, so a concurrent edit is refused instead of overwritten.
 - **Plugin updates**: the board's **Plugin update** section, or `agentforge update status|check|apply`, fast-forwards this checkout from `origin`, rebuilds, and reinstalls, only when the checkout is clean and no task is running.
 - **Shared backend**: all sessions and the board share one `agentforge-backend` (127.0.0.1 only, per-home token); tasks keep running after the dispatching session closes. `agentforge backend status` shows it.
 - **Monitor**: `agentforge monitor` (live terminal view) or `agentforge monitor --web` (read-only page on `http://127.0.0.1:18862`).
@@ -133,10 +133,6 @@ Run `agentforge whoami`, then `agentforge login` or set `CURSOR_API_KEY` if need
 ### A task did not finish
 
 Check its status in Claude Code; `forge_status` shows recent steps and how long the agent has been silent. `uncertain` means the turn was cut off (for example by a backend restart): check the files first, then look it up by its original `order_id` or resume it with `forge_followup`. **Do not re-dispatch the same change under a new order_id.** `blocked` means a turn or time budget ran out and needs your go-ahead.
-
-### Upgrading from ClaudeForge
-
-AgentForge was called ClaudeForge before 0.5. Run `node dist/cli.js install` once in the checkout: it uninstalls the old `claudeforge@claudeforge-local` plugin and marketplace and installs `agentforge@agentforge-local`; the MCP tools become `mcp__plugin_agentforge_agentforge__*`. The `claudeforge` command stays as an alias, and `~/.claudeforge` and the `CLAUDEFORGE_*` variables are unchanged. The repository moved to `bard1124/AgentForge`; GitHub redirects the old URL and updates keep working from an old clone, or run `git remote set-url origin git@github.com:bard1124/AgentForge.git`.
 
 ## Scope
 

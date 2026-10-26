@@ -4,7 +4,7 @@ import type { ForgeConfig } from "../config.js";
 import { CursorWorker } from "./cursor.js";
 import type { Worker, WorkerFactory } from "./worker.js";
 
-/** Built-in Cursor worker plus any plugin modules listed in CLAUDEFORGE_WORKERS. */
+/** Built-in Cursor worker plus any plugin modules listed in AGENTFORGE_WORKERS. */
 export async function loadWorkers(config: ForgeConfig): Promise<Record<string, Worker>> {
   const workers: Record<string, Worker> = { cursor: new CursorWorker(config) };
   for (const spec of config.workerModules) {

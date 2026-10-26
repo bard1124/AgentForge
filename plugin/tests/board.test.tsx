@@ -9,7 +9,7 @@ const PANE = {
   props: { title: "AgentForge", isFocused: true, bodyColumns: 60, placement: "dock", scroll: { offset: 0, bodyRows: 40 }, view: {} },
 } as const;
 
-const HOME = "/home/u/.claudeforge";
+const HOME = "/home/u/.agentforge";
 const WS = `${HOME}/sdd`;
 const P1 = "11111111-1111-4111-8111-111111111111";
 const T1 = "22222222-2222-4222-8222-222222222222";

@@ -1,7 +1,7 @@
 {
   "name": "agentforge",
   "displayName": "AgentForge",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "AgentForge makes Claude the commander and reviewer and Cursor the hands-on worker: Claude plans, splits, and accepts the work while a background Cursor agent implements it. This saves Claude tokens, lowers cost, and cuts the friction of switching between tools. Control auto-dispatch, executor, model, thinking effort, permission, and SDD task documents from the AgentForge board (/forge-board).",
   "author": {
     "name": "AgentForge"

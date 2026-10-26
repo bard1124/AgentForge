@@ -50,7 +50,7 @@ async function connect($: EngineInterface, restart = false): Promise<Conn> {
     if (health?.ok) return (conn = found);
   }
   const { node, cli, home } = await installation($);
-  const started = await $.process.run([node, cli, "backend", "start"], { env: { CLAUDEFORGE_HOME: home }, timeoutMs: 30_000 });
+  const started = await $.process.run([node, cli, "backend", "start"], { env: { AGENTFORGE_HOME: home }, timeoutMs: 30_000 });
   if (started.exitCode !== 0) throw new Error(`Could not start agentforge-backend: ${started.stderr.trim() || started.stdout.trim()}`);
   const fresh = await readConn($);
   if (!fresh) throw new Error("agentforge-backend started but left no address.");
@@ -710,7 +710,7 @@ export const register: Register = (on, options) => {
       return page(
         head,
         section(c, "Settings", [
-          row(c, <Text weight="medium" color="error">Settings unreadable</Text>, `${m.corrupt}. Everything reads as off; fix or delete ~/.claudeforge/delegation.json, then run \`agentforge config set enabled=false\`.`),
+          row(c, <Text weight="medium" color="error">Settings unreadable</Text>, `${m.corrupt}. Everything reads as off; fix or delete that file, then run \`agentforge config set enabled=false\`.`),
         ]),
       );
     }

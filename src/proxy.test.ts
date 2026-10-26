@@ -12,7 +12,7 @@ beforeAll(() => {
 });
 afterAll(() => {
   try {
-    execFileSync(process.execPath, [cli, "backend", "stop", "--force"], { env: { ...process.env, CLAUDEFORGE_HOME: home } });
+    execFileSync(process.execPath, [cli, "backend", "stop", "--force"], { env: { ...process.env, AGENTFORGE_HOME: home } });
   } catch {
     // already stopped
   }
@@ -21,7 +21,7 @@ afterAll(() => {
 
 describe("stdio relay", () => {
   it("holds messages pipelined behind initialize until the session exists", async () => {
-    const child = spawn(process.execPath, [cli, "serve"], { env: { ...process.env, CLAUDEFORGE_HOME: home, NODE_NO_WARNINGS: "1" }, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [cli, "serve"], { env: { ...process.env, AGENTFORGE_HOME: home, NODE_NO_WARNINGS: "1" }, stdio: ["pipe", "pipe", "pipe"] });
     let out = "";
     let err = "";
     child.stdout.on("data", (d) => (out += d));

@@ -1,7 +1,7 @@
 // A minimal AgentForge worker plugin. Copy it as a starting point for wiring in
 // another agent (a different CLI, an internal service, a human queue, ...).
 //
-//   CLAUDEFORGE_WORKERS=/abs/path/echo-worker.mjs agentforge run --worker echo "hello"
+//   AGENTFORGE_WORKERS=/abs/path/echo-worker.mjs agentforge run --worker echo "hello"
 //
 // The worker does no real work: it reports the task section of the brief back
 // as its result, emitting the same message shapes a real worker streams.

@@ -67,7 +67,7 @@ node dist/cli.js whoami       # 确认登录状态
 node dist/cli.js models       # 列出可用模型及参数
 ```
 
-也可以不登录，直接设置 `CURSOR_API_KEY` 环境变量，或写入 `~/.claudeforge/.env`（Windows 为 `%USERPROFILE%\.claudeforge\.env`，参考 [`.env.example`](.env.example)）。
+也可以不登录，直接设置 `CURSOR_API_KEY` 环境变量，或写入 `~/.agentforge/.env`（Windows 为 `%USERPROFILE%\.agentforge\.env`，参考 [`.env.example`](.env.example)）。
 
 ### 3. 安装插件与看板
 
@@ -113,7 +113,7 @@ node ~/agentforge-demo/hello.js
 | 关闭（默认） | Claude Code 按原来的方式工作，不主动派工 |
 | 关闭，但你明确要求 | 「交给 Cursor」或 `/forge` 仍会派工 |
 
-开关、执行端、模型、思考强度和新会话权限对**共用同一数据目录（`~/.claudeforge`）的所有会话**生效。新任务使用当前设置，已有任务和追问沿用原 agent 的配置；切换执行端会清空为上一个执行端选的模型、强度和权限。
+开关、执行端、模型、思考强度和新会话权限对**共用同一数据目录（`~/.agentforge`）的所有会话**生效。新任务使用当前设置，已有任务和追问沿用原 agent 的配置；切换执行端会清空为上一个执行端选的模型、强度和权限。
 
 「新会话权限」（Cursor：sandbox、auto-review 或两者）只在为任务新建 agent 时应用一次；执行端无法应用所选权限时会直接拒绝派工，不会用默认权限静默执行。
 
@@ -140,7 +140,7 @@ agentforge config set executor=cursor model=gpt-5.5 effort=high permission=sandb
 
 SDD 开启时，Claude Code 在方案确定后、派工前，先用 `sdd_task` 把每个任务的**目标、范围、计划和验收条件**保存为一份 `task.md`，再把文档路径交给 Cursor agent。方案因此不随对话丢失，也可以手动编辑。普通问答和讨论不创建文档。
 
-SDD 有独立开关，在看板中设置，默认开启；工作区默认 `~/.claudeforge/sdd`。每次保存都带读取时的版本号，文档在此期间被改过时会拒绝保存并提示冲突，看板会保留你的草稿。关闭 SDD 后文档仍可读，写入一律拒绝，自动派工照常可用。
+SDD 有独立开关，在看板中设置，默认开启；工作区默认 `~/.agentforge/sdd`。每次保存都带读取时的版本号，文档在此期间被改过时会拒绝保存并提示冲突，看板会保留你的草稿。关闭 SDD 后文档仍可读，写入一律拒绝，自动派工照常可用。
 
 ### 检查并安装插件更新
 
@@ -184,12 +184,6 @@ agentforge monitor --web    # 只读网页 http://127.0.0.1:18862
 ### 找不到 `claude` 命令
 
 `install` 和 `uninstall` 都支持 `--claude /绝对路径/claude`，选择会被记住。
-
-### 从 ClaudeForge 升级
-
-AgentForge 在 0.5 之前叫 ClaudeForge。在仓库目录重新运行一次 `node dist/cli.js install`：会卸载旧的 `claudeforge@claudeforge-local` 插件和 marketplace，并安装 `agentforge@agentforge-local`；MCP 工具前缀变为 `mcp__plugin_agentforge_agentforge__*`。`claudeforge` 命令保留为别名，数据目录 `~/.claudeforge` 和 `CLAUDEFORGE_*` 环境变量不变。
-
-仓库已改名为 `bard1124/AgentForge`，GitHub 会重定向旧地址，旧 clone 的插件更新照常可用；也可以运行 `git remote set-url origin git@github.com:bard1124/AgentForge.git` 指向新地址。
 
 ## 支持范围
 

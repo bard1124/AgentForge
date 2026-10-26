@@ -772,7 +772,7 @@ export class Forge {
       },
       warning: this.workers[this.delegation().executor]
         ? undefined
-        : `The board's executor "${this.delegation().executor}" is not loaded (check CLAUDEFORGE_WORKERS); dispatches fall back to "${this.config.worker}".`,
+        : `The board's executor "${this.delegation().executor}" is not loaded (check AGENTFORGE_WORKERS); dispatches fall back to "${this.config.worker}".`,
     };
   }
 

@@ -24,8 +24,16 @@ export function parseModelParams(raw: string | undefined): ModelParameterValue[]
   });
 }
 
+/** Before 0.5.1 the variables were prefixed `CLAUDEFORGE_`; those still apply when the new name is unset. */
+const LEGACY_PREFIX = "CLAUDEFORGE_";
+
+/** `AGENTFORGE_<name>`, falling back to the pre-rename variable. */
+export function envVar(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  return env[`AGENTFORGE_${name}`] ?? env[`${LEGACY_PREFIX}${name}`];
+}
+
 function intEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
-  const v = Number.parseInt(env[name] ?? "", 10);
+  const v = Number.parseInt(envVar(env, name) ?? "", 10);
   return Number.isFinite(v) && v >= 0 ? v : fallback;
 }
 
@@ -34,22 +42,29 @@ function list(raw: string | undefined): string[] {
 }
 
 function setting(env: NodeJS.ProcessEnv, name: string): string | undefined {
-  return env[name]?.trim() || undefined;
+  return envVar(env, name)?.trim() || undefined;
 }
 
+export const HOME_DIR = path.join(os.homedir(), ".agentforge");
+/** The data directory before 0.5.1; `install` moves it to HOME_DIR. */
+export const LEGACY_HOME_DIR = path.join(os.homedir(), ".claudeforge");
+
 export function defaultHome(env: NodeJS.ProcessEnv = process.env): string {
-  return env.CLAUDEFORGE_HOME ?? path.join(os.homedir(), ".claudeforge");
+  const explicit = envVar(env, "HOME");
+  if (explicit) return explicit;
+  return !fs.existsSync(HOME_DIR) && fs.existsSync(LEGACY_HOME_DIR) ? LEGACY_HOME_DIR : HOME_DIR;
 }
 
 /**
- * Loads `CLAUDEFORGE_ENV_FILE`, or `<home>/.env` when it exists. Variables already set in the
+ * Loads `AGENTFORGE_ENV_FILE`, or `<home>/.env` when it exists. Variables already set in the
  * environment win. The project's own `.env` is deliberately not read: it belongs to the repo being
  * worked on, not to AgentForge.
  */
 export function loadEnvFiles(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const file = env.CLAUDEFORGE_ENV_FILE ?? path.join(defaultHome(env), ".env");
+  const explicit = envVar(env, "ENV_FILE");
+  const file = explicit ?? path.join(defaultHome(env), ".env");
   if (!fs.existsSync(file)) {
-    if (env.CLAUDEFORGE_ENV_FILE) throw new Error(`CLAUDEFORGE_ENV_FILE not found: ${file}`);
+    if (explicit) throw new Error(`AGENTFORGE_ENV_FILE not found: ${file}`);
     return undefined;
   }
   process.loadEnvFile(file);
@@ -81,19 +96,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ForgeConfig {
   return {
     home,
     apiKey: env.CURSOR_API_KEY?.trim() || undefined,
-    worker: setting(env, "CLAUDEFORGE_WORKER") ?? "cursor",
-    model: setting(env, "CLAUDEFORGE_MODEL") ?? "composer-2.5",
-    modelParams: parseModelParams(setting(env, "CLAUDEFORGE_MODEL_PARAMS")),
-    settingSources: parseSettingSources(env.CLAUDEFORGE_SETTING_SOURCES),
-    autoReview: env.CLAUDEFORGE_AUTO_REVIEW === "1",
-    maxRework: intEnv(env, "CLAUDEFORGE_MAX_REWORK", 3),
-    maxTurns: intEnv(env, "CLAUDEFORGE_MAX_TURNS", 20),
-    maxTaskMs: intEnv(env, "CLAUDEFORGE_MAX_TASK_MINUTES", 60) * 60_000,
-    maxStepsKept: intEnv(env, "CLAUDEFORGE_MAX_STEPS", 300),
-    verifyTimeoutMs: intEnv(env, "CLAUDEFORGE_VERIFY_TIMEOUT_SEC", 900) * 1000,
-    stallWarnSec: intEnv(env, "CLAUDEFORGE_STALL_WARN_SEC", 120),
-    startTimeoutMs: intEnv(env, "CLAUDEFORGE_START_TIMEOUT_SEC", 300) * 1000,
-    mcpConfigPath: env.CLAUDEFORGE_MCP_CONFIG ?? path.join(home, "mcp.json"),
-    workerModules: list(env.CLAUDEFORGE_WORKERS),
+    worker: setting(env, "WORKER") ?? "cursor",
+    model: setting(env, "MODEL") ?? "composer-2.5",
+    modelParams: parseModelParams(setting(env, "MODEL_PARAMS")),
+    settingSources: parseSettingSources(envVar(env, "SETTING_SOURCES")),
+    autoReview: envVar(env, "AUTO_REVIEW") === "1",
+    maxRework: intEnv(env, "MAX_REWORK", 3),
+    maxTurns: intEnv(env, "MAX_TURNS", 20),
+    maxTaskMs: intEnv(env, "MAX_TASK_MINUTES", 60) * 60_000,
+    maxStepsKept: intEnv(env, "MAX_STEPS", 300),
+    verifyTimeoutMs: intEnv(env, "VERIFY_TIMEOUT_SEC", 900) * 1000,
+    stallWarnSec: intEnv(env, "STALL_WARN_SEC", 120),
+    startTimeoutMs: intEnv(env, "START_TIMEOUT_SEC", 300) * 1000,
+    mcpConfigPath: envVar(env, "MCP_CONFIG") ?? path.join(home, "mcp.json"),
+    workerModules: list(envVar(env, "WORKERS")),
   };
 }

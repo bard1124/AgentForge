@@ -54,7 +54,7 @@ export const INSTRUCTIONS = [
 ].join("\n");
 
 export function createServer(forge: Forge, defaultCwd: string, config: ForgeConfig): McpServer {
-  const server = new McpServer({ name: "agentforge", version: "0.5.0" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "agentforge", version: "0.5.1" }, { instructions: INSTRUCTIONS });
   const sdd = new SddStore(config.home, config.worker);
   const workers = forge.workerNames();
 

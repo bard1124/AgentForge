@@ -18,7 +18,7 @@ With `agentforge run`, the steps stream in the terminal as the worker reads, edi
 `workers/echo-worker.mjs` is the smallest possible worker. A plugin is an ES module that exports `createWorker(config)` and returns `{ name, create, resume }`. Sessions `send()` prompts and return runs that stream SDK-shaped messages. See `src/workers/worker.ts` for the interface.
 
 ```bash
-export CLAUDEFORGE_WORKERS=$PWD/examples/workers/echo-worker.mjs
+export AGENTFORGE_WORKERS=$PWD/examples/workers/echo-worker.mjs
 node dist/cli.js run --worker echo "say hello"
 ```
 
@@ -26,4 +26,4 @@ Claude Code sees plugin workers in `forge_capabilities` and can pick one with `f
 
 ## MCP servers for workers
 
-`mcp.example.json` shows how to give workers extra tools. Copy it to `~/.claudeforge/mcp.json` (or point `CLAUDEFORGE_MCP_CONFIG` at it). Then pass server names with `forge_dispatch` (`mcp_servers: ["github"]`) or `agentforge run --mcp github`. Task records store only the names. Credentials stay in the config file and are loaded again whenever a session starts or resumes.
+`mcp.example.json` shows how to give workers extra tools. Copy it to `~/.agentforge/mcp.json` (or point `AGENTFORGE_MCP_CONFIG` at it). Then pass server names with `forge_dispatch` (`mcp_servers: ["github"]`) or `agentforge run --mcp github`. Task records store only the names. Credentials stay in the config file and are loaded again whenever a session starts or resumes.

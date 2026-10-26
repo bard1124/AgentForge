@@ -96,7 +96,7 @@ export async function ensureBackend(home: string, waitMs = 20_000): Promise<{ in
       detached: true,
       windowsHide: true,
       stdio: ["ignore", log, log],
-      env: { ...process.env, CLAUDEFORGE_HOME: home, NODE_NO_WARNINGS: "1" },
+      env: { ...process.env, AGENTFORGE_HOME: home, NODE_NO_WARNINGS: "1" },
     });
     child.unref();
     fs.closeSync(log);
@@ -205,7 +205,7 @@ export async function runBackend(config: ForgeConfig): Promise<void> {
     running,
     reinstall: async () => {
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(process.execPath, [cli, "install"], { cwd: home, stdio: "ignore", windowsHide: true, env: { ...process.env, CLAUDEFORGE_HOME: home } });
+        const child = spawn(process.execPath, [cli, "install"], { cwd: home, stdio: "ignore", windowsHide: true, env: { ...process.env, AGENTFORGE_HOME: home } });
         child.on("error", reject);
         child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`agentforge install exited with ${code}`))));
       });
@@ -219,7 +219,7 @@ export async function runBackend(config: ForgeConfig): Promise<void> {
       detached: true,
       windowsHide: true,
       stdio: "ignore",
-      env: { ...process.env, CLAUDEFORGE_HOME: home },
+      env: { ...process.env, AGENTFORGE_HOME: home },
     });
     child.unref();
     setTimeout(() => void shutdown(), 200);
