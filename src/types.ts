@@ -2,11 +2,13 @@ import type { ModelParameterValue, TokenUsage } from "@cursor/sdk";
 import type { Permission } from "./delegation.js";
 
 /** Lifecycle as reported to Claude and the board, derived from the internal status. */
-export type OrderStatus = "queued" | "dispatching" | "executing" | "completed" | "failed" | "blocked" | "cancelled" | "uncertain";
+export type OrderStatus = "queued" | "dispatching" | "executing" | "paused" | "completed" | "failed" | "blocked" | "cancelled" | "uncertain";
 
 export type TaskStatus =
   | "queued"
   | "running"
+  /** Stopped from the board with its agent kept; resume re-sends the stopped turn. Not running. */
+  | "paused"
   | "finished"
   | "error"
   | "cancelled"
@@ -33,7 +35,7 @@ export interface Turn {
   index: number;
   prompt: string;
   runId?: string;
-  status: "running" | "finished" | "error" | "cancelled" | "interrupted";
+  status: "running" | "paused" | "finished" | "error" | "cancelled" | "interrupted";
   startedAt: string;
   endedAt?: string;
   result?: string;

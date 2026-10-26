@@ -42,6 +42,11 @@ export class TaskStore {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
+  delete(id: string): void {
+    fs.rmSync(this.taskFile(id), { force: true });
+    fs.rmSync(this.eventFile(id), { force: true });
+  }
+
   appendEvent(id: string, event: unknown): void {
     fs.appendFileSync(this.eventFile(id), JSON.stringify({ at: new Date().toISOString(), event }) + "\n");
   }

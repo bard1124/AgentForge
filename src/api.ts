@@ -11,12 +11,13 @@ import {
   readDelegation,
   writeDelegation,
 } from "./delegation.js";
-import { type Forge, orderStatus } from "./forge.js";
+import { type Forge, ForgeError, orderStatus } from "./forge.js";
 import { savingsSummary } from "./savings.js";
 import { SddError, SddStore } from "./sdd.js";
 import type { Updater } from "./updater.js";
 import { packageVersion } from "./version.js";
 import type { TaskStore } from "./store.js";
+import type { Task } from "./types.js";
 
 export interface ApiContext {
   config: ForgeConfig;
@@ -46,20 +47,44 @@ export class ApiError extends Error {
   }
 }
 
-type Handler = (ctx: ApiContext, body: unknown, url: URL) => unknown | Promise<unknown>;
+type Handler = (ctx: ApiContext, body: unknown, url: URL, params: Record<string, string>) => unknown | Promise<unknown>;
 
 const routes = new Map<string, Handler>();
+const patterns: { method: string; parts: string[]; handler: Handler }[] = [];
 
-/** Registers `METHOD /api/path`; the handler's return value is sent as JSON. */
+/** Registers `METHOD /api/path`; `:name` segments match one path segment. The handler's return value is sent as JSON. */
 export function route(method: string, pathname: string, handler: Handler): void {
-  routes.set(`${method} ${pathname}`, handler);
+  if (pathname.includes("/:")) patterns.push({ method, parts: pathname.split("/"), handler });
+  else routes.set(`${method} ${pathname}`, handler);
+}
+
+function match(method: string, pathname: string): { handler: Handler; params: Record<string, string> } | undefined {
+  const exact = routes.get(`${method} ${pathname}`);
+  if (exact) return { handler: exact, params: {} };
+  const parts = pathname.split("/");
+  for (const p of patterns) {
+    if (p.method !== method || p.parts.length !== parts.length) continue;
+    const params: Record<string, string> = {};
+    const hit = p.parts.every((seg, i) => {
+      if (!seg.startsWith(":")) return seg === parts[i];
+      params[seg.slice(1)] = decodeURIComponent(parts[i]!);
+      return parts[i] !== "";
+    });
+    if (hit) return { handler: p.handler, params };
+  }
+  return undefined;
 }
 
 export async function handleApi(ctx: ApiContext, method: string, url: URL, body: unknown): Promise<ApiAnswer> {
-  const handler = routes.get(`${method} ${url.pathname}`);
-  if (!handler) return { status: 404, body: { error: `No route ${method} ${url.pathname}` } };
+  let found;
   try {
-    return { status: 200, body: await handler(ctx, body, url) };
+    found = match(method, url.pathname);
+  } catch {
+    return { status: 400, body: { error: `Malformed path ${url.pathname}` } };
+  }
+  if (!found) return { status: 404, body: { error: `No route ${method} ${url.pathname}` } };
+  try {
+    return { status: 200, body: await found.handler(ctx, body, url, found.params) };
   } catch (err) {
     if (err instanceof ApiError) return { status: err.status, body: { error: err.message } };
     return { status: 500, body: { error: (err as Error).message } };
@@ -152,6 +177,35 @@ route("GET", "/api/tasks", (ctx, _body, url) => {
       updatedAt: t.updatedAt,
     }));
 });
+
+/** Board task controls; a refused action (wrong state, unknown id) answers 4xx with Forge's message. */
+async function taskCall<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  if (!/^[\w-]+$/.test(id)) throw new ApiError(400, `Invalid task id: ${id}`);
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof ForgeError) throw new ApiError(err.message.startsWith("No task") ? 404 : 409, err.message);
+    throw err;
+  }
+}
+
+const taskState = (t: Task) => ({ id: t.id, status: t.status, orderStatus: orderStatus(t) });
+
+route("POST", "/api/tasks/clear", async (ctx) => ({ deleted: await ctx.forge.clearFinished() }));
+route("POST", "/api/tasks/:id/pause", (ctx, _b, _u, { id }) => taskCall(id!, async () => taskState(await ctx.forge.pause(id!))));
+route("POST", "/api/tasks/:id/resume", (ctx, _b, _u, { id }) =>
+  taskCall(id!, async () => {
+    await ctx.forge.resume(id!);
+    return taskState(ctx.forge.get(id!));
+  }),
+);
+route("POST", "/api/tasks/:id/cancel", (ctx, _b, _u, { id }) => taskCall(id!, async () => taskState(await ctx.forge.cancel(id!))));
+route("DELETE", "/api/tasks/:id", (ctx, _b, _u, { id }) =>
+  taskCall(id!, async () => {
+    await ctx.forge.delete(id!);
+    return { deleted: id };
+  }),
+);
 
 /** Board-only SDD access; every request names the workspace it was made against. */
 function sddCall<T>(ctx: ApiContext, fn: (store: SddStore) => T): T {

@@ -31,7 +31,7 @@ agentforge serve（轻量 stdio 转发）──── HTTP ────► agent
 | 思考强度 | 只显示目录为该固定模型提供的强度；否则跟随模型默认，不虚构选项。 |
 | 新会话权限 | 执行端支持时显示（Cursor：sandbox、auto-review 或两者）。只在为任务新建 agent 时应用一次，追问沿用；执行端无法应用时拒绝派工。 |
 | SDD 文档 | 任务文档的独立开关、工作区和编辑器。 |
-| 任务 | 最近五个任务和运行中的数量。 |
+| 任务 | 最近 100 个任务，每次显示 8 行，用 ▲ / ▼ 翻页，旁边显示位置（如 `9–16 / 40`）和运行中的数量。运行中的任务可 **Pause**（停止当前轮次但保留 agent，状态变为 `paused`）或 **Cancel**（结束任务）；暂停的任务可 **Resume**（在同一个 agent 上重发被停下的那一轮）或 **Cancel**；其余任务可 **Delete**（删除任务记录和事件日志）。**Clear finished** 删除所有既不在运行也未暂停的任务。删除都需要再点 Confirm 确认。移动端只显示文字。 |
 | Plugin update | 折叠区，见[更新与卸载](#更新与卸载)。 |
 
 开关从下一条消息生效：Hook 在每条消息前加一行 ON/OFF 说明，是否派工仍由 Claude Code 按任务判断。看板隐藏时暂停轮询；Claude Code 移动端只显示文字。
@@ -67,8 +67,8 @@ SDD 文档的目录结构：
 | `forge_followup` | 给同一个 agent 发消息。运行中时尽量插入当前轮次，否则排队；可恢复空闲、被中断或已验收的任务。 |
 | `forge_result` | 最终报告、派工以来的 git 改动（含新文件）和可选 diff。派工前已有改动的文件标记为 `preExisting`。 |
 | `forge_accept` | 运行验证命令。通过即验收；失败则把输出和反馈发回返工，超过 `max_rework` 后判为拒绝。 |
-| `forge_retry` | 对临时错误（`lastError.retryable`），在同一 agent 上重发最近失败或被中断的轮次。 |
-| `forge_cancel` | 停止运行中的轮次。 |
+| `forge_retry` | 对临时错误（`lastError.retryable`），在同一 agent 上重发最近失败或被中断的轮次。用户要求时也可恢复 `paused` 的任务。 |
+| `forge_cancel` | 停止运行中的轮次；对已暂停的任务则直接结束为 `cancelled`。 |
 | `forge_conversations` | 列出执行端的 agent 会话，归档或恢复其中一个。 |
 | `sdd_task` | 读写 SDD 文档：工作区、项目、任务，创建、读取、按版本保存。 |
 | `forge_list` | 最近的任务及其 order id 和状态。 |
@@ -81,7 +81,7 @@ status、wait、result 和 cancel 都接受 `task_id` 或 `order_id`。在 Claud
 
 `forge_dispatch` 接收 `order_id`：每项工作一个新 UUID。用相同 `order_id` 和参数重试会返回已有任务（`reused: true`），不会启动第二个 agent；相同 id 但参数不同会被拒绝。
 
-每个任务都有 `order_status`：`queued`、`dispatching`、`executing`、`completed`、`failed`、`blocked`（预算用完）、`cancelled` 或 `uncertain`。`uncertain` 表示轮次中途被打断（例如后台在运行中停止）：先检查 agent 会话和实际文件，再用原 `order_id` 查询，不要新建任务。`conversation_id` 是 Cursor agent 的 id，与 order id 不同。
+每个任务都有 `order_status`：`queued`、`dispatching`、`executing`、`paused`（在看板上被暂停，不计入运行中、不阻止重启后台，重启后仍为暂停；Claude Code 不应重新派发，从看板恢复）、`completed`、`failed`、`blocked`（预算用完）、`cancelled` 或 `uncertain`。`uncertain` 表示轮次中途被打断（例如后台在运行中停止）：先检查 agent 会话和实际文件，再用原 `order_id` 查询，不要新建任务。`conversation_id` 是 Cursor agent 的 id，与 order id 不同。
 
 ## 预算与用量
 

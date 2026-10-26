@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { SDKMessage } from "@cursor/sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { type ApiContext, handleApi } from "./api.js";
 import { loadConfig } from "./config.js";
 import { defaultDelegation, writeDelegation } from "./delegation.js";
 import { Forge } from "./forge.js";
@@ -433,5 +434,131 @@ describe("orders and the board", () => {
 
     writeDelegation(home, { ...defaultDelegation(home), permission: "auto-review" });
     await expect(forge.dispatch({ task: "z", cwd: repo })).rejects.toThrow(/Blocked: cursor cannot apply the "auto-review"/);
+  });
+});
+
+describe("board task controls", () => {
+  const ORDER = "0b8e7c5a-3f1d-4c2e-9a6b-5d4c3b2a1f00";
+  /** Prompts containing "hold" run until stopped while `hold` is set; the rest finish at once. */
+  const holding = () => {
+    const gate = { hold: true };
+    const worker = new FakeWorker((_cwd, prompt) => ({
+      messages: [],
+      result: { status: "finished", result: prompt },
+      holdUntil: gate.hold && prompt.includes("hold") ? new Promise(() => undefined) : undefined,
+    }));
+    return { worker, gate };
+  };
+  const apiCtx = (forge: Forge) => ({ forge, config: { home }, version: "test", startedAt: "", sessions: () => 0, restart: () => undefined }) as unknown as ApiContext;
+  const call = (forge: Forge, method: string, route: string) => handleApi(apiCtx(forge), method, new URL(`http://127.0.0.1${route}`), undefined);
+
+  it("pauses a running turn, keeps follow-ups, and resumes the same prompt on the same agent", async () => {
+    const { worker, gate } = holding();
+    const forge = makeForge(worker);
+    const { task } = await forge.dispatch({ task: "hold: long job", cwd: repo });
+    expect(await forge.followup(task.id, "then this")).toBe("queued");
+
+    await forge.pause(task.id);
+    expect(forge.get(task.id).status).toBe("paused");
+    expect(forge.get(task.id).turns.at(-1)?.status).toBe("paused");
+    expect(forge.status(task.id)).toMatchObject({ orderStatus: "paused", pendingFollowups: 1, hint: expect.stringMatching(/paused this task on the board/) });
+    expect(await forge.wait(task.id, 1)).toBe(true);
+    expect((await call(forge, "GET", "/api/status")).body).toMatchObject({ running: [] });
+    expect(worker.prompts).toHaveLength(1);
+    await expect(forge.pause(task.id)).rejects.toThrow(/not running/);
+
+    gate.hold = false;
+    await forge.resume(task.id);
+    await forge.wait(task.id, 5);
+    expect(worker.prompts).toEqual([worker.prompts[0], worker.prompts[0], "then this"]);
+    expect(forge.get(task.id).agentId).toBe("agent-1");
+    expect(forge.get(task.id).status).toBe("finished");
+    await expect(forge.resume(task.id)).rejects.toThrow(/not paused/);
+  });
+
+  it("keeps a paused task paused across a restart and resumes it on the same agent", async () => {
+    const { worker, gate } = holding();
+    const first = makeForge(worker);
+    const { task } = await first.dispatch({ task: "hold", cwd: repo });
+    await first.pause(task.id);
+    const store = new TaskStore(home);
+    store.save({ ...store.get(task.id)!, ownerPid: 999_999_999 });
+
+    const second = makeForge(worker);
+    expect(second.get(task.id).status).toBe("paused");
+    gate.hold = false;
+    await second.retry(task.id);
+    await second.wait(task.id, 5);
+    expect(worker.resumed).toEqual(["agent-1"]);
+    expect(worker.prompts[1]).toBe(worker.prompts[0]);
+    expect(second.get(task.id).status).toBe("finished");
+  });
+
+  it("cancels a paused task without resuming it", async () => {
+    const { worker } = holding();
+    const forge = makeForge(worker);
+    const { task } = await forge.dispatch({ task: "hold", cwd: repo });
+    await forge.followup(task.id, "later");
+    await forge.pause(task.id);
+    const cancelled = await forge.cancel(task.id);
+    expect(cancelled).toMatchObject({ status: "cancelled", pending: [] });
+    expect(cancelled.turns.at(-1)?.status).toBe("cancelled");
+    expect(worker.prompts).toHaveLength(1);
+    await expect(forge.resume(task.id)).rejects.toThrow(/not paused/);
+  });
+
+  it("refuses to delete a running task; deleting removes its files and frees the order_id", async () => {
+    const { worker } = holding();
+    const forge = makeForge(worker);
+    const { task } = await forge.dispatch({ orderId: ORDER, task: "hold", cwd: repo });
+    await expect(forge.delete(task.id)).rejects.toThrow(/is running/);
+    await forge.cancel(task.id);
+
+    const files = [path.join(home, "tasks", `${task.id}.json`), path.join(home, "tasks", `${task.id}.events.jsonl`)];
+    expect(files.every((f) => fs.existsSync(f))).toBe(true);
+    await forge.delete(task.id);
+    expect(files.some((f) => fs.existsSync(f))).toBe(false);
+    expect(() => forge.get(task.id)).toThrow(/No task/);
+    expect(forge.findOrder(ORDER)).toBeUndefined();
+
+    const again = await forge.dispatch({ orderId: ORDER, task: "hold", cwd: repo });
+    expect(again.reused).toBeUndefined();
+    expect(again.task.id).not.toBe(task.id);
+    await forge.cancel(again.task.id);
+  });
+
+  it("clears only tasks that are neither running nor paused", async () => {
+    const { worker } = holding();
+    const forge = makeForge(worker);
+    const running = (await forge.dispatch({ task: "hold a", cwd: repo })).task;
+    const paused = (await forge.dispatch({ task: "hold b", cwd: repo })).task;
+    const done = (await forge.dispatch({ task: "done", cwd: repo })).task;
+    await forge.pause(paused.id);
+    await forge.wait(done.id, 5);
+
+    expect(await forge.clearFinished()).toBe(1);
+    expect(forge.list().map((t) => t.id).sort()).toEqual([running.id, paused.id].sort());
+    expect(await forge.clearFinished()).toBe(0);
+    await forge.delete(paused.id);
+    await forge.cancel(running.id);
+  });
+
+  it("serves the controls over the HTTP API", async () => {
+    const { worker } = holding();
+    const forge = makeForge(worker);
+    const { task } = await forge.dispatch({ task: "hold", cwd: repo });
+
+    expect(await call(forge, "DELETE", `/api/tasks/${task.id}`)).toMatchObject({ status: 409, body: { error: expect.stringMatching(/is running/) } });
+    expect(await call(forge, "POST", "/api/backend/restart")).toMatchObject({ status: 409 });
+    expect(await call(forge, "POST", `/api/tasks/${task.id}/pause`)).toEqual({ status: 200, body: { id: task.id, status: "paused", orderStatus: "paused" } });
+    expect(await call(forge, "POST", "/api/backend/restart")).toEqual({ status: 200, body: { restarting: true } });
+    expect(await call(forge, "POST", `/api/tasks/${task.id}/pause`)).toMatchObject({ status: 409, body: { error: expect.stringMatching(/not running/) } });
+    expect(await call(forge, "POST", "/api/tasks/clear")).toEqual({ status: 200, body: { deleted: 0 } });
+    expect(await call(forge, "POST", `/api/tasks/${task.id}/resume`)).toMatchObject({ status: 200, body: { status: "running" } });
+    expect(await call(forge, "POST", `/api/tasks/${task.id}/cancel`)).toMatchObject({ status: 200, body: { status: "cancelled" } });
+    expect(await call(forge, "POST", "/api/tasks/clear")).toEqual({ status: 200, body: { deleted: 1 } });
+    expect(await call(forge, "DELETE", `/api/tasks/${task.id}`)).toMatchObject({ status: 404 });
+    expect(await call(forge, "POST", "/api/tasks/bad%20id/pause")).toMatchObject({ status: 400 });
+    expect(await call(forge, "POST", "/api/tasks/x/explode")).toMatchObject({ status: 404 });
   });
 });

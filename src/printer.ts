@@ -80,7 +80,7 @@ export function formatStatusLine(s: StatusView): string {
 
 export function formatResult(r: ResultView): string {
   const lines: string[] = [];
-  const statusColor = r.status === "accepted" || r.status === "finished" ? green : red;
+  const statusColor = r.status === "accepted" || r.status === "finished" ? green : r.status === "paused" ? yellow : red;
   lines.push("", bold(`== ${r.id}  ${r.title}`), `status: ${statusColor(r.status)}`);
   if (r.finalReport) lines.push("", bold("Report"), r.finalReport.trim());
   if (r.lastError && r.status !== "accepted" && r.status !== "finished") lines.push("", red(`Last error: ${r.lastError}`));

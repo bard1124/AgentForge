@@ -171,7 +171,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
       title: "Check task progress",
       description:
         "Snapshot of a task: status, current turn, recent steps (tool calls, messages, thinking), idle time, budget used, and token usage. " +
-        "Pass `since` = previous lastSeq to get only new steps. orderStatus is one of queued, dispatching, executing, completed, failed, blocked, cancelled, uncertain; agentId is the native conversation id.",
+        "Pass `since` = previous lastSeq to get only new steps. orderStatus is one of queued, dispatching, executing, paused, completed, failed, blocked, cancelled, uncertain (paused: the user stopped it on the board; do not re-dispatch); agentId is the native conversation id.",
       inputSchema: {
         ...lookup,
         since: z.number().int().min(0).optional().describe("Return steps with seq greater than this."),
@@ -262,7 +262,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
       title: "Retry the failed turn",
       description:
         "Re-send the last failed or interrupted turn's instruction on the same agent. Use once when forge_status shows lastError.retryable=true. " +
-        "For interrupted tasks, check forge_result first: the earlier attempt may have left partial changes.",
+        "For interrupted tasks, check forge_result first: the earlier attempt may have left partial changes. A task the user paused is resumed the same way, but only when the user asks.",
       inputSchema: { task_id: taskId },
     },
     handle("forge_retry", async (a) => {

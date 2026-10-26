@@ -26,6 +26,8 @@ export function orderStatus(task: Task): OrderStatus {
       return "queued";
     case "running":
       return turn?.runId ? "executing" : "dispatching";
+    case "paused":
+      return "paused";
     case "finished":
     case "accepted":
       return "completed";
@@ -69,6 +71,8 @@ interface LiveTask {
   opening?: Promise<WorkerSession>;
   run?: WorkerRun;
   done?: Promise<void>;
+  /** Set by pause(): the cancelled turn ends as paused and queued follow-ups wait for resume. */
+  pausing?: boolean;
   waiters: Set<() => void>;
 }
 
@@ -481,8 +485,9 @@ export class Forge {
     return "started";
   }
 
-  /** Re-sends the prompt of the last failed or interrupted turn on the same agent. */
+  /** Re-sends the prompt of the last failed or interrupted turn on the same agent; a paused task is resumed. */
   async retry(id: string): Promise<Turn> {
+    if (this.get(id).status === "paused") return this.resume(id);
     const live = await this.claim(id);
     const { task } = live;
     const last = task.turns.at(-1);
@@ -496,7 +501,38 @@ export class Forge {
     return task.turns.at(-1)!;
   }
 
+  /** Cancels the running turn but keeps the agent and queued follow-ups; resume() picks it up again. */
+  async pause(id: string): Promise<Task> {
+    const live = this.live.get(id);
+    const task = this.get(id);
+    if (task.status !== "running") throw new ForgeError(`Task ${id} is not running (status: ${task.status}).`);
+    if (!live?.run) throw new ForgeError(`Task ${id} is still starting or owned by another AgentForge process (pid ${task.ownerPid}); try again shortly.`);
+    live.pausing = true;
+    await live.run.cancel();
+    await live.done;
+    return task;
+  }
+
+  /** Re-sends the paused turn's prompt on the same agent. */
+  async resume(id: string): Promise<Turn> {
+    const live = await this.claim(id);
+    const { task } = live;
+    const last = task.turns.at(-1);
+    if (!last || task.status !== "paused") throw new ForgeError(`Task ${id} is not paused (status: ${task.status}).`);
+    await this.startTurn(live, last.prompt);
+    return task.turns.at(-1)!;
+  }
+
   async cancel(id: string): Promise<Task> {
+    if (this.get(id).status === "paused") {
+      const { task } = await this.claim(id);
+      const last = task.turns.at(-1);
+      if (last?.status === "paused") last.status = "cancelled";
+      task.status = "cancelled";
+      task.pending = [];
+      this.persist(task);
+      return task;
+    }
     const live = this.live.get(id);
     const task = this.get(id);
     if (task.status !== "running") throw new ForgeError(`Task ${id} is not running (status: ${task.status}).`);
@@ -505,6 +541,26 @@ export class Forge {
     await live.run.cancel();
     await live.done;
     return task;
+  }
+
+  /** Removes a task that is not running, with its event log; its order_id can then be dispatched afresh. */
+  async delete(id: string): Promise<void> {
+    const task = this.get(id);
+    if (task.status === "running" || task.status === "queued") throw new ForgeError(`Task ${id} is running; pause or cancel it first.`);
+    const live = this.live.get(id);
+    if (live) {
+      await this.release(live);
+      this.live.delete(id);
+    }
+    if (task.orderId) this.orders.delete(task.orderId);
+    this.store.delete(id);
+  }
+
+  /** Deletes every task that is neither running nor paused; returns how many. */
+  async clearFinished(): Promise<number> {
+    const done = this.list().filter((t) => t.status !== "running" && t.status !== "queued" && t.status !== "paused");
+    for (const task of done) await this.delete(task.id);
+    return done.length;
   }
 
   async result(id: string, opts: { includeDiff?: boolean; paths?: string[]; maxDiffChars?: number } = {}): Promise<ResultView> {
@@ -702,6 +758,8 @@ export class Forge {
     clearTimeout(budgetTimer);
     turn.endedAt = now();
     task.activeMs += Date.parse(turn.endedAt) - Date.parse(turn.startedAt);
+    if (live.pausing && turn.status === "cancelled") turn.status = "paused";
+    live.pausing = false;
     if (overBudget) {
       turn.status = "error";
       turn.error = `Stopped: task time budget of ${Math.round(task.maxTaskMs / 60_000)} min used up. Ask the user before continuing.`;
@@ -712,7 +770,7 @@ export class Forge {
     if (turn.error) this.addStep(task, { kind: "error", text: truncate(turn.error, 300) });
     this.persist(task);
 
-    const next = task.pending.shift();
+    const next = turn.status === "paused" ? undefined : task.pending.shift();
     if (next !== undefined && turn.status !== "cancelled") {
       try {
         await this.startTurn(live, next);
@@ -822,6 +880,8 @@ export class Forge {
           return `Worker has emitted nothing for ${idleSec}s. It may be waiting on the model backend or stalled. Tell the user; if it stays silent, forge_cancel then forge_followup to retry on the same agent.`;
         }
         return "Worker is busy. Use forge_wait to block until it finishes, or forge_followup to steer it.";
+      case "paused":
+        return "The user paused this task on the board. Do not re-dispatch or retry it; it resumes from the board, or with forge_retry only if the user asks.";
       case "finished":
         return "Turn finished. Review with forge_result, then forge_accept (optionally with verify_command) or forge_followup to request changes.";
       case "error":

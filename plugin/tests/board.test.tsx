@@ -14,11 +14,16 @@ const WS = `${HOME}/sdd`;
 const P1 = "11111111-1111-4111-8111-111111111111";
 const T1 = "22222222-2222-4222-8222-222222222222";
 
-type Call = { method: string; path: string; body?: Record<string, unknown> };
+type Call = { method: string; path: string; search?: string; body?: Record<string, unknown> };
+type Row = { id: string; title: string; status: string; orderStatus: string; worker: string; model: string; updatedAt: string };
+
+const ORDER_OF: Record<string, string> = { running: "executing", paused: "paused", finished: "completed", cancelled: "cancelled" };
+const taskRow = (id: string, title: string, status: string): Row => ({ id, title, status, orderStatus: ORDER_OF[status] ?? status, worker: "cursor", model: "composer-2.5", updatedAt: "" });
 
 /** An in-memory agentforge-backend answering the board's /api routes. */
-function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean } = {}) {
+function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean; tasks?: Row[] } = {}) {
   const calls: Call[] = [];
+  const tasks = opts.tasks ?? [taskRow("t-1", "Build login", "running")];
   const settings: Record<string, unknown> = { enabled: false, executor: "cursor", sdd: { enabled: true, workspace: WS } };
   let doc = { id: T1, title: "Login page", path: `${WS}/${P1}/${T1}/task.md`, revision: "r1", content: "# Login page\n" };
   const runtime = {
@@ -54,14 +59,29 @@ function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean } = {
     const body = e.init?.body ? (JSON.parse(String(e.init.body)) as Record<string, unknown>) : undefined;
     expect(url.host).toBe("127.0.0.1:7777");
     if (url.pathname !== "/api/health") expect(e.init?.headers).toMatchObject({ authorization: "Bearer secret" });
-    calls.push({ method, path: url.pathname, body });
+    calls.push({ method, path: url.pathname, search: url.search, body });
+    const control = url.pathname.match(/^\/api\/tasks\/([^/]+)(?:\/(pause|resume|cancel))?$/);
+    if (control && url.pathname !== "/api/tasks/clear") {
+      const i = tasks.findIndex((t) => t.id === control[1]);
+      if (i < 0) return json(404, { error: `No task with id ${control[1]}` });
+      const next = { pause: "paused", resume: "running", cancel: "cancelled" }[control[2] ?? ""];
+      if (method === "DELETE") tasks.splice(i, 1);
+      else if (next) tasks[i] = taskRow(tasks[i]!.id, tasks[i]!.title, next);
+      return json(200, { id: control[1] });
+    }
     switch (`${method} ${url.pathname}`) {
       case "GET /api/health":
         return json(200, { ok: true });
       case "GET /api/board":
         return json(200, { settings, executors: ["cursor"], hook: { state: "active", detail: "", lastRunAt: "2026-10-23T10:00:00.000Z" }, backend: { pid: 42, version: "0.4.0" }, running: 1 });
       case "GET /api/tasks":
-        return json(200, [{ id: "t-1", title: "Build login", orderStatus: "executing", worker: "cursor", model: "composer-2.5", updatedAt: "" }]);
+        return json(200, tasks);
+      case "POST /api/tasks/clear": {
+        const kept = tasks.filter((t) => t.status === "running" || t.status === "paused");
+        const deleted = tasks.length - kept.length;
+        tasks.splice(0, tasks.length, ...kept);
+        return json(200, { deleted });
+      }
       case "GET /api/savings":
         if (opts.savingsDown) return json(500, { error: "ledger unreadable" });
         return json(200, {
@@ -104,7 +124,7 @@ function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean } = {
         return json(404, { error: `no route ${method} ${url.pathname}` });
     }
   });
-  return { calls, settings, opened };
+  return { calls, settings, opened, tasks };
 }
 
 /** A session start registers the command and reads the board once. */
@@ -250,5 +270,78 @@ test("the board on mobile is text only", async ($, on) => {
   expect((await ui.find({ type: "Text", text: /Auto-dispatch OFF/ }))?.text).toMatch(/SDD on/);
   expect(await ui.findAll({ type: "Button" })).toHaveLength(0);
   expect(await ui.find({ type: "Text", text: /Token savings/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+const title = (ui: { find: (q: { type: "Text"; text: RegExp }) => Promise<unknown> }, text: string) => ui.find({ type: "Text", text: new RegExp(`^${text}$`) });
+
+test("the task card shows 8 rows at a time and pages with ▲ / ▼", async ($, on) => {
+  const b = backend(on, { tasks: Array.from({ length: 20 }, (_, i) => taskRow(`t-${i + 1}`, `Task ${i + 1}`, "finished")) });
+  await openBoard($);
+  const ui = await $.ui.mount({ ...PANE, surface: "desktop" });
+  expect(b.calls.find((c) => c.path === "/api/tasks")?.search).toBe("?limit=100");
+
+  expect(await title(ui, "Task 8")).toBeDefined();
+  expect(await title(ui, "Task 9")).toBeUndefined();
+  expect(await ui.find({ type: "Text", text: /^1–8 \/ 20$/ })).toBeDefined();
+  expect(await ui.find({ key: "tasks-up" })).toBeUndefined();
+
+  await ui.press({ key: "tasks-down" });
+  expect(await ui.find({ type: "Text", text: /^9–16 \/ 20$/ })).toBeDefined();
+  expect(await title(ui, "Task 8")).toBeUndefined();
+  expect(await title(ui, "Task 9")).toBeDefined();
+  expect(await title(ui, "Task 16")).toBeDefined();
+
+  await ui.press({ key: "tasks-down" });
+  expect(await ui.find({ type: "Text", text: /^17–20 \/ 20$/ })).toBeDefined();
+  expect(await ui.find({ key: "tasks-down" })).toBeUndefined();
+
+  await ui.press({ key: "tasks-up" });
+  expect(await ui.find({ type: "Text", text: /^9–16 \/ 20$/ })).toBeDefined();
+  await ui.unmount();
+});
+
+test("each task row offers the controls its status allows", async ($, on) => {
+  const b = backend(on, { tasks: [taskRow("a", "Runs", "running"), taskRow("b", "Rests", "paused"), taskRow("c", "Done", "finished")] });
+  await openBoard($);
+  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
+  for (const key of ["task-pause-a", "task-cancel-a", "task-resume-b", "task-cancel-b", "task-delete-c"]) expect(await ui.find({ key })).toBeDefined();
+  for (const key of ["task-delete-a", "task-delete-b", "task-pause-b", "task-pause-c", "tasks-down"]) expect(await ui.find({ key })).toBeUndefined();
+
+  await ui.press({ key: "task-pause-a" });
+  expect(b.calls.some((c) => c.method === "POST" && c.path === "/api/tasks/a/pause")).toBe(true);
+  expect(await ui.find({ key: "task-resume-a" })).toBeDefined();
+
+  await ui.press({ key: "task-cancel-b" });
+  expect(b.calls.some((c) => c.method === "POST" && c.path === "/api/tasks/b/cancel")).toBe(true);
+  expect(await ui.find({ key: "task-delete-b" })).toBeDefined();
+  await ui.unmount();
+});
+
+test("deleting a task or clearing finished ones asks to confirm first", async ($, on) => {
+  const b = backend(on, { tasks: [taskRow("a", "Runs", "running"), taskRow("c", "Done", "finished"), taskRow("d", "Also done", "cancelled")] });
+  await openBoard($);
+  const ui = await $.ui.mount({ ...PANE, surface: "desktop" });
+  const deletes = () => b.calls.filter((c) => c.method === "DELETE" || c.path === "/api/tasks/clear");
+
+  await ui.press({ key: "task-delete-c" });
+  expect(await ui.find({ key: "task-delete-c" })).toBeUndefined();
+  expect(await ui.find({ key: "task-delete-c-keep" })).toBeDefined();
+  await ui.press({ key: "task-delete-c-keep" });
+  expect(await ui.find({ key: "task-delete-c" })).toBeDefined();
+  expect(deletes()).toHaveLength(0);
+
+  await ui.press({ key: "task-delete-c" });
+  await ui.press({ key: "task-delete-c-confirm" });
+  expect(deletes()).toEqual([expect.objectContaining({ method: "DELETE", path: "/api/tasks/c" })]);
+  expect(await title(ui, "Done")).toBeUndefined();
+
+  await ui.press({ key: "tasks-clear" });
+  expect(deletes()).toHaveLength(1);
+  await ui.press({ key: "tasks-clear-confirm" });
+  expect(deletes()).toHaveLength(2);
+  expect(b.tasks.map((t) => t.id)).toEqual(["a"]);
+  expect(await ui.find({ type: "Text", text: /^Deleted 1 finished task\.$/ })).toBeDefined();
+  expect(await ui.find({ key: "tasks-clear" })).toBeUndefined();
   await ui.unmount();
 });

@@ -20,7 +20,7 @@ export type ExecutorRuntime = {
   error?: string;
 };
 
-export type TaskRow = { id: string; title: string; orderStatus: string; worker: string; model: string; updatedAt: string };
+export type TaskRow = { id: string; title: string; status: string; orderStatus: string; worker: string; model: string; updatedAt: string };
 
 export type UpdateView = {
   state: string;
@@ -68,6 +68,12 @@ export type BoardModel = {
   running: number;
   runtime: Record<string, ExecutorRuntime | { loading: true }>;
   tasks: TaskRow[];
+  /** First task row shown in the card's window. */
+  taskOffset: number;
+  /** A task id, or "clear", whose delete waits for Confirm. */
+  confirm?: string;
+  /** A task id, or "clear", whose action is in flight. */
+  taskBusy?: string;
   savings?: SavingsView;
   sddOpen: boolean;
   sdd?: SddView;

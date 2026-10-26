@@ -31,7 +31,7 @@ Every Claude Code session and the board talk to one shared background process, s
 | Thinking effort | Only the efforts the catalog lists for the fixed model; otherwise the model default. Nothing is invented. |
 | New-session permission | Shown when the executor supports it (Cursor: sandbox, auto-review, both). Applies once, when a new agent is created for a task; follow-ups keep it. A permission the executor cannot apply blocks the dispatch. |
 | SDD documents | Separate switch, workspace, and editor for task documents. |
-| Tasks | The five most recent tasks and how many are running. |
+| Tasks | The 100 most recent tasks, 8 rows at a time with ▲ / ▼ to page, the position (such as `9–16 / 40`) and how many are running. A running task offers **Pause** (stops the turn but keeps the agent; the task becomes `paused`) and **Cancel** (ends it); a paused task offers **Resume** (re-sends the stopped turn on the same agent) and **Cancel**; any other task offers **Delete** (removes its record and event log). **Clear finished** deletes every task that is neither running nor paused. Deletes ask for Confirm first. Text only on mobile. |
 | Plugin update | Collapsed section; see [Updates and uninstall](#updates-and-uninstall). |
 
 The switch takes effect from the next message: the hook adds a one-line ON/OFF note to each prompt, and Claude Code still decides per task whether delegating fits. The board pauses polling while hidden; on Claude Code mobile it is text only.
@@ -67,8 +67,8 @@ The workspace defaults to `~/.agentforge/sdd` and is set on the board or with `c
 | `forge_followup` | Message the same agent. Steered into a running turn when possible, otherwise queued; resumes idle, interrupted, or accepted tasks. |
 | `forge_result` | Final report, git changes since dispatch (including new files), and an optional diff. Files dirty before dispatch are flagged `preExisting`. |
 | `forge_accept` | Run the verification command. Pass: accepted. Fail: output plus feedback sent back for rework until `max_rework`, then rejected. |
-| `forge_retry` | Re-send the last failed or interrupted turn on the same agent, for transient errors (`lastError.retryable`). |
-| `forge_cancel` | Stop the running turn. |
+| `forge_retry` | Re-send the last failed or interrupted turn on the same agent, for transient errors (`lastError.retryable`). Also resumes a `paused` task, when the user asks. |
+| `forge_cancel` | Stop the running turn; a paused task is ended as `cancelled`. |
 | `forge_conversations` | List the executor's agent conversations; archive or restore one. |
 | `sdd_task` | Read and write SDD documents: workspace, projects, tasks, create, read, save against a revision. |
 | `forge_list` | Recent tasks with their order ids and statuses. |
@@ -81,7 +81,7 @@ Errors from Cursor carry `error_type` and a `retryable` verdict: tool errors in 
 
 `forge_dispatch` takes an `order_id`: a fresh UUID per piece of work. Retrying with the same `order_id` and arguments returns the existing task (`reused: true`) instead of starting a second agent; the same id with different arguments is refused.
 
-Each task has an `order_status`: `queued`, `dispatching`, `executing`, `completed`, `failed`, `blocked` (a budget ran out), `cancelled`, or `uncertain`. `uncertain` means the turn was cut off (for example the backend stopped mid-run): check the agent's conversation and the files before doing anything, and look the task up by its original `order_id` rather than creating a new one. `conversation_id` is the Cursor agent id, different from the order id.
+Each task has an `order_status`: `queued`, `dispatching`, `executing`, `paused` (paused on the board: not counted as running, does not block a backend restart, stays paused across one; Claude Code should not re-dispatch it, resume it from the board), `completed`, `failed`, `blocked` (a budget ran out), `cancelled`, or `uncertain`. `uncertain` means the turn was cut off (for example the backend stopped mid-run): check the agent's conversation and the files before doing anything, and look the task up by its original `order_id` rather than creating a new one. `conversation_id` is the Cursor agent id, different from the order id.
 
 ## Budgets and usage
 

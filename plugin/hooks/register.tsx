@@ -1,15 +1,15 @@
 import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register, RenderChildren } from "claude-code";
 
-import type { BoardModel, ExecutorRuntime, Permission, SavingsView, Settings, SddView, UpdateView } from "../types/index";
+import type { BoardModel, ExecutorRuntime, Permission, SavingsView, Settings, SddView, TaskRow, UpdateView } from "../types/index";
 
 const PANE = "agentforge-board";
 const COMMAND = "forge-board";
 const DEFAULT = "__default__";
 
-const EMPTY: BoardModel = { loaded: false, executors: [], running: 0, runtime: {}, tasks: [], sddOpen: false, updateOpen: false };
+const EMPTY: BoardModel = { loaded: false, executors: [], running: 0, runtime: {}, tasks: [], taskOffset: 0, sddOpen: false, updateOpen: false };
 // Change the tag when BoardModel's fields change: it declines what an earlier version stored.
-const board = atom({ plugin: "agentforge", key: "board" } as const, EMPTY, { shape: "board-2" });
+const board = atom({ plugin: "agentforge", key: "board" } as const, EMPTY, { shape: "board-3" });
 
 type Install = { home: string; node: string; cli: string };
 type Conn = { port: number; token: string };
@@ -88,7 +88,7 @@ async function refresh($: EngineInterface): Promise<void> {
   try {
     const [b, tasks, savings, hooksDisabled] = await Promise.all([
       api<BoardResponse>($, "GET", "/api/board"),
-      api<BoardModel["tasks"]>($, "GET", "/api/tasks?limit=5"),
+      api<BoardModel["tasks"]>($, "GET", "/api/tasks?limit=100"),
       // A failed estimate hides its section; the rest of the board still loads.
       api<SavingsView>($, "GET", "/api/savings").catch(() => undefined),
       $.settings.read({ key: "disableAllHooks" }).catch(() => undefined),
@@ -135,6 +135,19 @@ async function refreshUpdate($: EngineInterface, method = "GET", route = "/api/u
   } catch (err) {
     await notice($, message(err));
   }
+}
+
+/** Runs one task control, then reloads the list; a refusal shows as the notice. */
+async function taskAction($: EngineInterface, target: string, method: string, route: string): Promise<void> {
+  await set($, (m) => ({ ...m, confirm: undefined, taskBusy: target }));
+  try {
+    const res = await api<{ deleted?: unknown }>($, method, route);
+    if (typeof res.deleted === "number") await notice($, `Deleted ${res.deleted} finished task${res.deleted === 1 ? "" : "s"}.`);
+  } catch (err) {
+    await notice($, message(err));
+  }
+  await set($, (m) => ({ ...m, taskBusy: undefined }));
+  await refresh($);
 }
 
 // --- SDD ---------------------------------------------------------------------
@@ -210,6 +223,7 @@ const STATUS_COLOR: Record<string, string> = {
   completed: "success",
   failed: "error",
   blocked: "error",
+  paused: "warning",
   uncertain: "warning",
   cancelled: "inactive",
 };
@@ -441,23 +455,91 @@ function executorSection($: EngineInterface, c: Ctx, m: BoardModel) {
   );
 }
 
-function tasksSection(c: Ctx, m: BoardModel) {
+/** Task rows the card shows at once; ▲ / ▼ move the window, the kit has no scrolling container. */
+const TASK_PAGE = 8;
+const deletable = (t: TaskRow) => t.status !== "running" && t.status !== "queued" && t.status !== "paused";
+
+/** Delete with a confirm step: the button turns into Confirm / Keep. */
+function confirmDelete($: EngineInterface, c: Ctx, m: BoardModel, target: string, key: string, label: string, method: string, route: string) {
+  const { Box, Button } = c.E;
+  if (m.confirm !== target) {
+    return (
+      <Button key={key} variant="secondary" onPress={() => void set($, (x) => ({ ...x, confirm: target }))}>
+        {label}
+      </Button>
+    );
+  }
+  return (
+    <Box flexDirection="row" columnGap="xs">
+      <Button key={`${key}-confirm`} variant="primary" onPress={() => void taskAction($, target, method, route)}>
+        Confirm
+      </Button>
+      <Button key={`${key}-keep`} plain dimColor onPress={() => void set($, (x) => ({ ...x, confirm: undefined }))}>
+        Keep
+      </Button>
+    </Box>
+  );
+}
+
+function taskControls($: EngineInterface, c: Ctx, m: BoardModel, t: TaskRow) {
+  const { Button, Text } = c.E;
+  const id = q(t.id);
+  if (m.taskBusy === t.id) return <Text size="footnote" dimColor>Working…</Text>;
+  const press = (key: string, label: string, method: string, route: string) => (
+    <Button key={`${key}-${t.id}`} variant="secondary" onPress={() => void taskAction($, t.id, method, route)}>
+      {label}
+    </Button>
+  );
+  if (t.status === "running") return [press("task-pause", "Pause", "POST", `/api/tasks/${id}/pause`), press("task-cancel", "Cancel", "POST", `/api/tasks/${id}/cancel`)];
+  if (t.status === "paused") return [press("task-resume", "Resume", "POST", `/api/tasks/${id}/resume`), press("task-cancel", "Cancel", "POST", `/api/tasks/${id}/cancel`)];
+  if (deletable(t)) return confirmDelete($, c, m, t.id, `task-delete-${t.id}`, "Delete", "DELETE", `/api/tasks/${id}`);
+  return null;
+}
+
+/** The task card; `controls` is off on mobile, which stays text only. */
+function tasksSection($: EngineInterface, c: Ctx, m: BoardModel, controls: boolean) {
   const { E } = c;
-  const { Box, Text } = E;
-  const rows = m.tasks.length
-    ? m.tasks.map((t) =>
+  const { Box, Text, Button } = E;
+  const total = m.tasks.length;
+  const offset = total ? Math.min(m.taskOffset, Math.floor((total - 1) / TASK_PAGE) * TASK_PAGE) : 0;
+  const shown = m.tasks.slice(offset, offset + TASK_PAGE);
+  const rows = shown.length
+    ? shown.map((t) =>
         row(
           c,
           <Text weight="medium" wrap="truncate-end">{t.title}</Text>,
           <Text size="footnote" dimColor mono wrap="truncate-end">{`${t.id}${t.updatedAt ? ` · ${stamp(t.updatedAt)}` : ""}`}</Text>,
-          <Box flexDirection="row" columnGap="xs">
+          <Box flexDirection="row" columnGap="xs" alignItems="center">
             <Text size="footnote" color={STATUS_COLOR[t.orderStatus] ?? "inactive"}>●</Text>
             <Text size="footnote" color={STATUS_COLOR[t.orderStatus] ?? "inactive"}>{t.orderStatus}</Text>
+            {controls ? taskControls($, c, m, t) : null}
           </Box>,
         ),
       )
     : [row(c, <Text dimColor>No tasks yet.</Text>, undefined)];
-  return section(c, "Recent tasks", rows, <Text size="footnote" color={m.running ? "suggestion" : undefined} dimColor={!m.running}>{`${m.running} running`}</Text>);
+  const move = (key: string, glyph: string, to: number, enabled: boolean) =>
+    controls && enabled ? (
+      <Button key={key} plain onPress={() => void set($, (x) => ({ ...x, taskOffset: to }))}>
+        {glyph}
+      </Button>
+    ) : controls ? (
+      <Text dimColor>{glyph}</Text>
+    ) : null;
+  const paging = total > TASK_PAGE;
+  const aside = (
+    <Box flexDirection="row" columnGap="sm" alignItems="center">
+      {controls && m.tasks.some(deletable)
+        ? m.taskBusy === "clear"
+          ? <Text size="footnote" dimColor>Clearing…</Text>
+          : confirmDelete($, c, m, "clear", "tasks-clear", "Clear finished", "POST", "/api/tasks/clear")
+        : null}
+      {paging ? move("tasks-up", "▲", offset - TASK_PAGE, offset > 0) : null}
+      {paging ? <Text size="footnote" dimColor>{`${offset + 1}–${offset + shown.length} / ${total}`}</Text> : null}
+      {paging ? move("tasks-down", "▼", offset + TASK_PAGE, offset + TASK_PAGE < total) : null}
+      <Text size="footnote" color={m.running ? "suggestion" : undefined} dimColor={!m.running}>{`${m.running} running`}</Text>
+    </Box>
+  );
+  return section(c, "Recent tasks", rows, aside);
 }
 
 function sddSection($: EngineInterface, c: Ctx, m: BoardModel) {
@@ -744,7 +826,7 @@ export const register: Register = (on, options) => {
     }
     if (e.surface === "mobile") {
       const s = m.settings!;
-      return page(head, <Text>{`Auto-dispatch ${s.enabled ? "ON" : "OFF"} · SDD ${s.sdd.enabled ? "on" : "off"}`}</Text>, tasksSection(c, m));
+      return page(head, <Text>{`Auto-dispatch ${s.enabled ? "ON" : "OFF"} · SDD ${s.sdd.enabled ? "on" : "off"}`}</Text>, tasksSection($, c, m, false));
     }
     return page(
       head,
@@ -753,7 +835,7 @@ export const register: Register = (on, options) => {
       savingsSection(c, m),
       executorSection($, c, m),
       sddSection($, c, m),
-      tasksSection(c, m),
+      tasksSection($, c, m, true),
       updateSection($, c, m),
     );
   });
