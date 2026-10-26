@@ -25,6 +25,7 @@ Every Claude Code session and the board talk to one shared background process, s
 |---|---|
 | Auto-dispatch | **ON**: Claude Code plans, splits, briefs, and accepts; the executor implements. **OFF** (default): Claude Code works as usual; explicit requests ("hand this to Cursor", `/forge`) still dispatch. |
 | Hook state | `Hook active` once the `UserPromptSubmit` hook has run since the last change; `Pending` until the next message picks it up; a warning when `disableAllHooks` is set. A saved switch is not proof that the hook ran. |
+| Token savings (estimate) | Per period (today, last 7 days, all time): (delegated − Claude) / delegated, or `—` with nothing delegated. Delegated sums the executor's turn usage by task creation time; Claude is estimated from each MCP tool call's arguments and returned text (~4 ASCII chars or 1 CJK char per token), logged to `~/.agentforge/claude-traffic.jsonl`. It assumes Claude would have spent about what the worker spent and ignores Claude's later re-reads of tool results; it can be negative. Hidden on mobile. |
 | Executor | Cursor, or a worker plugin (`AGENTFORGE_WORKERS`). Switching clears the model, effort, and permission chosen for the previous one. |
 | Model | Follow the executor default, or a fixed model from its live catalog. An offline executor or a failed catalog read is reported; a model that left the catalog stays selected with a warning instead of being swapped silently. |
 | Thinking effort | Only the efforts the catalog lists for the fixed model; otherwise the model default. Nothing is invented. |

@@ -12,6 +12,7 @@ import {
   writeDelegation,
 } from "./delegation.js";
 import { type Forge, orderStatus } from "./forge.js";
+import { savingsSummary } from "./savings.js";
 import { SddError, SddStore } from "./sdd.js";
 import type { Updater } from "./updater.js";
 import { packageVersion } from "./version.js";
@@ -109,6 +110,8 @@ route("GET", "/api/board", (ctx) => {
     running: runningTasks(ctx).length,
   };
 });
+
+route("GET", "/api/savings", (ctx) => savingsSummary(ctx.config.home, ctx.forge.list(), new Date()));
 
 route("GET", "/api/runtime", (ctx, _body, url) => ctx.forge.runtimeInfo(url.searchParams.get("executor") ?? undefined));
 

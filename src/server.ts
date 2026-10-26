@@ -4,7 +4,9 @@ import { z } from "zod";
 import type { ForgeConfig } from "./config.js";
 import { isRetryableError } from "./errors.js";
 import { Forge, ForgeError, orderStatus } from "./forge.js";
+import { recordTraffic } from "./savings.js";
 import { SddError, SddStore } from "./sdd.js";
+import { estimateTokens } from "./tokens.js";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
@@ -36,14 +38,23 @@ function fail(err: unknown): ToolResult {
   return { content: [{ type: "text", text: describeError(err) }], isError: true };
 }
 
-function handle<A>(fn: (args: A) => Promise<unknown>): (args: A) => Promise<ToolResult> {
-  return async (args) => {
-    try {
-      return ok(await fn(args));
-    } catch (err) {
-      return fail(err);
-    }
-  };
+/** Wraps tool bodies as ToolResults and logs each exchange's estimated tokens to the Claude traffic ledger. */
+function handler(home: string) {
+  return <A>(tool: string, fn: (args: A) => Promise<unknown>) =>
+    async (args: A): Promise<ToolResult> => {
+      let result: ToolResult;
+      try {
+        result = ok(await fn(args));
+      } catch (err) {
+        result = fail(err);
+      }
+      try {
+        recordTraffic(home, tool, estimateTokens(JSON.stringify(args ?? {})) + estimateTokens(result.content.map((c) => c.text).join("")));
+      } catch {
+        // the ledger never fails a tool call
+      }
+      return result;
+    };
 }
 
 export const INSTRUCTIONS = [
@@ -57,6 +68,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
   const server = new McpServer({ name: "agentforge", version: "0.5.1" }, { instructions: INSTRUCTIONS });
   const sdd = new SddStore(config.home, config.worker);
   const workers = forge.workerNames();
+  const handle = handler(config.home);
 
   server.registerTool(
     "forge_capabilities",
@@ -66,7 +78,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
-    handle(async () => forge.capabilities()),
+    handle("forge_capabilities", async () => forge.capabilities()),
   );
   const taskId = z.string().describe("Task id returned by forge_dispatch (cf-YYYYMMDD-xxxxxx).");
   const lookup = {
@@ -115,7 +127,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
         max_minutes: z.number().min(1).max(600).optional().describe("Cap on cumulative worker running time; a turn over budget is cancelled."),
       },
     },
-    handle(async (a) => {
+    handle("forge_dispatch", async (a) => {
       const { task, warnings, reused } = await forge.dispatch({
         orderId: a.order_id,
         task: a.task,
@@ -167,7 +179,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
       },
       annotations: { readOnlyHint: true },
     },
-    handle(async (a) => forge.status(resolve(a), a.since, a.limit)),
+    handle("forge_status", async (a) => forge.status(resolve(a), a.since, a.limit)),
   );
 
   server.registerTool(
@@ -182,7 +194,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
       },
       annotations: { readOnlyHint: true },
     },
-    handle(async (a) => {
+    handle("forge_wait", async (a) => {
       const id = resolve(a);
       const settled = await forge.wait(id, a.timeout_sec ?? 120);
       return { settled, ...forge.status(id, a.since) };
@@ -198,7 +210,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
         "If it is mid-turn the message is steered into the turn when possible, otherwise queued for right after it.",
       inputSchema: { task_id: taskId, message: z.string().min(1) },
     },
-    handle(async (a) => ({ task_id: a.task_id, delivery: await forge.followup(a.task_id, a.message) })),
+    handle("forge_followup", async (a) => ({ task_id: a.task_id, delivery: await forge.followup(a.task_id, a.message) })),
   );
 
   server.registerTool(
@@ -216,7 +228,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
       },
       annotations: { readOnlyHint: true },
     },
-    handle(async (a) => forge.result(resolve(a), { includeDiff: a.include_diff, paths: a.paths, maxDiffChars: a.max_diff_chars })),
+    handle("forge_result", async (a) => forge.result(resolve(a), { includeDiff: a.include_diff, paths: a.paths, maxDiffChars: a.max_diff_chars })),
   );
 
   server.registerTool(
@@ -234,7 +246,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
         rework_on_fail: z.boolean().optional().describe("Default true."),
       },
     },
-    handle(async (a) => {
+    handle("forge_accept", async (a) => {
       const { task, verification, action } = await forge.accept(a.task_id, {
         verifyCommand: a.verify_command,
         feedback: a.feedback,
@@ -253,7 +265,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
         "For interrupted tasks, check forge_result first: the earlier attempt may have left partial changes.",
       inputSchema: { task_id: taskId },
     },
-    handle(async (a) => {
+    handle("forge_retry", async (a) => {
       const turn = await forge.retry(a.task_id);
       return { task_id: a.task_id, turn: turn.index, status: "running", next: "Use forge_wait to follow progress." };
     }),
@@ -269,7 +281,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
       inputSchema: lookup,
       annotations: { destructiveHint: true },
     },
-    handle(async (a) => {
+    handle("forge_cancel", async (a) => {
       const task = await forge.cancel(resolve(a));
       return { task_id: task.id, status: task.status, order_status: orderStatus(task), stopped: task.status !== "running" };
     }),
@@ -284,7 +296,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
       inputSchema: { executor: z.string().optional().describe(`Limit to one executor: ${workers.join(", ")}.`) },
       annotations: { readOnlyHint: true },
     },
-    handle(async (a) => forge.runtimeInfo(a.executor)),
+    handle("forge_runtime_info", async (a) => forge.runtimeInfo(a.executor)),
   );
 
   server.registerTool(
@@ -301,7 +313,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
         limit: z.number().int().min(1).max(200).optional(),
       },
     },
-    handle(async (a) => forge.conversation({ ...a, cwd: a.cwd ?? (a.action === "list" ? defaultCwd : undefined) })),
+    handle("forge_conversations", async (a) => forge.conversation({ ...a, cwd: a.cwd ?? (a.action === "list" ? defaultCwd : undefined) })),
   );
 
   server.registerTool(
@@ -323,7 +335,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
         base_revision: z.string().optional().describe("For save_task: the revision read_task returned."),
       },
     },
-    handle(async (a) => {
+    handle("sdd_task", async (a) => {
       const need = (v: string | undefined, name: string) => {
         if (!v) throw new ForgeError(`${name} is required for ${a.action}.`);
         return v;
@@ -364,7 +376,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
       },
       annotations: { readOnlyHint: true },
     },
-    handle(async (a) =>
+    handle("forge_list", async (a) =>
       forge
         .list()
         .filter((t) => !a.status || t.status === a.status)

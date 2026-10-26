@@ -52,6 +52,9 @@ export type SddView = {
   conflict?: string;
 };
 
+export type SavingsPeriod = { delegatedTokens: number; claudeTokens: number; savedPct: number | null };
+export type SavingsView = { today: SavingsPeriod; week: SavingsPeriod; all: SavingsPeriod };
+
 export type BoardModel = {
   loaded: boolean;
   error?: string;
@@ -65,6 +68,7 @@ export type BoardModel = {
   running: number;
   runtime: Record<string, ExecutorRuntime | { loading: true }>;
   tasks: TaskRow[];
+  savings?: SavingsView;
   sddOpen: boolean;
   sdd?: SddView;
   updateOpen: boolean;

@@ -142,6 +142,10 @@ SDD 开启时，Claude Code 在方案确定后、派工前，先用 `sdd_task` �
 
 SDD 有独立开关，在看板中设置，默认开启；工作区默认 `~/.agentforge/sdd`。每次保存都带读取时的版本号，文档在此期间被改过时会拒绝保存并提示冲突，看板会保留你的草稿。关闭 SDD 后文档仍可读，写入一律拒绝，自动派工照常可用。
 
+### 估算节省的 token
+
+看板的「Token savings (estimate)」区按今天、最近 7 天和全部显示节省比例：(委派 − Claude) / 委派。委派是执行端各任务轮次的 token 合计；Claude 是 Claude 与 AgentForge 每次 MCP 工具调用的参数和返回文本的估算 token（记在 `~/.agentforge/claude-traffic.jsonl`）。这只是估算：它假设 Claude 自己做会花掉与执行端差不多的 token，也不计 Claude 之后重读工具结果的消耗；比例可能为负。
+
 ### 检查并安装插件更新
 
 看板底部折叠的「Plugin update」区，或 `agentforge update status|check|apply`，可以从 `origin` 更新本仓库。打开看板时每天最多自动检查一次；「Check for updates」立即检查。

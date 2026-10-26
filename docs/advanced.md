@@ -25,6 +25,7 @@ agentforge serve（轻量 stdio 转发）──── HTTP ────► agent
 |---|---|
 | 自动派工 | **开**：Claude Code 规划、拆解、下达并验收，执行端负责实现。**关**（默认）：Claude Code 照常工作；明确要求（「交给 Cursor」、`/forge`）仍会派工。 |
 | Hook 状态 | `UserPromptSubmit` Hook 在最近一次修改后运行过即为 `Hook active`；下一条消息生效前为 `Pending`；设置了 `disableAllHooks` 时显示警告。开关已保存不代表 Hook 已运行。 |
+| Token savings (estimate) | 按今天、最近 7 天和全部显示 (委派 − Claude) / 委派；没有委派时显示 `—`。委派按任务创建时间汇总执行端各轮用量；Claude 按每次 MCP 工具调用的参数和返回文本估算（约 4 个 ASCII 字符或 1 个中日韩字符算 1 token），记在 `~/.agentforge/claude-traffic.jsonl`。假设 Claude 自己做会花掉与执行端差不多的 token，不计 Claude 之后重读工具结果的消耗；比例可能为负。移动端不显示。 |
 | 执行端 | Cursor，或 Worker 插件（`AGENTFORGE_WORKERS`）。切换时清空为上一个执行端选择的模型、强度和权限。 |
 | 模型 | 跟随执行端默认，或从实时目录中选固定模型。执行端离线或目录读取失败会明确提示；已从目录下架的模型保持选中并给出警告，不会静默替换。 |
 | 思考强度 | 只显示目录为该固定模型提供的强度；否则跟随模型默认，不虚构选项。 |

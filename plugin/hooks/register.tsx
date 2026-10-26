@@ -1,7 +1,7 @@
 import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register, RenderChildren } from "claude-code";
 
-import type { BoardModel, ExecutorRuntime, Permission, Settings, SddView, UpdateView } from "../types/index";
+import type { BoardModel, ExecutorRuntime, Permission, SavingsView, Settings, SddView, UpdateView } from "../types/index";
 
 const PANE = "agentforge-board";
 const COMMAND = "forge-board";
@@ -9,7 +9,7 @@ const DEFAULT = "__default__";
 
 const EMPTY: BoardModel = { loaded: false, executors: [], running: 0, runtime: {}, tasks: [], sddOpen: false, updateOpen: false };
 // Change the tag when BoardModel's fields change: it declines what an earlier version stored.
-const board = atom({ plugin: "agentforge", key: "board" } as const, EMPTY, { shape: "board-1" });
+const board = atom({ plugin: "agentforge", key: "board" } as const, EMPTY, { shape: "board-2" });
 
 type Install = { home: string; node: string; cli: string };
 type Conn = { port: number; token: string };
@@ -86,13 +86,15 @@ type BoardResponse = Pick<BoardModel, "settings" | "corrupt" | "executors" | "ho
 
 async function refresh($: EngineInterface): Promise<void> {
   try {
-    const [b, tasks, hooksDisabled] = await Promise.all([
+    const [b, tasks, savings, hooksDisabled] = await Promise.all([
       api<BoardResponse>($, "GET", "/api/board"),
       api<BoardModel["tasks"]>($, "GET", "/api/tasks?limit=5"),
+      // A failed estimate hides its section; the rest of the board still loads.
+      api<SavingsView>($, "GET", "/api/savings").catch(() => undefined),
       $.settings.read({ key: "disableAllHooks" }).catch(() => undefined),
     ]);
     const current = await read($, board);
-    await set($, (m) => ({ ...m, ...b, tasks, hooksDisabled: hooksDisabled === true, loaded: true, error: undefined }));
+    await set($, (m) => ({ ...m, ...b, tasks, savings, hooksDisabled: hooksDisabled === true, loaded: true, error: undefined }));
     if (b.settings && !current.runtime[b.settings.executor]) void loadRuntime($, b.settings.executor);
     if (current.updateOpen && current.update?.busy) void refreshUpdate($);
     $.ui.status(b.settings ? `AgentForge: auto-dispatch ${b.settings.enabled ? "ON" : "OFF"} · ${b.settings.executor}` : undefined);
@@ -331,6 +333,32 @@ function dispatchSection($: EngineInterface, c: Ctx, m: BoardModel) {
       </Box>,
       onOff(c, "auto", s.enabled, (on) => void change($, { enabled: on })),
     ),
+  ]);
+}
+
+/** 1234 -> "1.2k", 3_400_000 -> "3.4M". */
+function compact(n: number): string {
+  const [div, unit]: [number, string] = n >= 999_950 ? [1e6, "M"] : n >= 1e3 ? [1e3, "k"] : [1, ""];
+  return `${Number((n / div).toFixed(div === 1 ? 0 : 1))}${unit}`;
+}
+
+const SAVINGS_PERIODS = [
+  ["today", "Today"],
+  ["week", "Last 7 days"],
+  ["all", "All time"],
+] as const;
+
+function savingsSection(c: Ctx, m: BoardModel) {
+  const { Text } = c.E;
+  const s = m.savings;
+  if (!s) return null;
+  return section(c, "Token savings (estimate)", [
+    ...SAVINGS_PERIODS.map(([key, label]) => {
+      const p = s[key];
+      const pct = p.savedPct === null ? <Text dimColor>—</Text> : <Text color={p.savedPct >= 0 ? "success" : "warning"}>{`${p.savedPct}% saved`}</Text>;
+      return row(c, label, `delegated ${compact(p.delegatedTokens)} · Claude ~${compact(p.claudeTokens)}`, pct);
+    }),
+    row(c, <Text size="footnote" dimColor wrap="wrap">Delegated = tokens the executor used; Claude = estimated MCP tool traffic.</Text>, undefined),
   ]);
 }
 
@@ -722,6 +750,7 @@ export const register: Register = (on, options) => {
       head,
       m.notice ? <Text size="footnote" color="warning" wrap="wrap">{m.notice}</Text> : null,
       dispatchSection($, c, m),
+      savingsSection(c, m),
       executorSection($, c, m),
       sddSection($, c, m),
       tasksSection(c, m),

@@ -180,7 +180,7 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function sumUsage(turns: Turn[]): UsageView | undefined {
+export function sumUsage(turns: Turn[]): UsageView | undefined {
   const reported = turns.map((t) => t.usage).filter((u): u is TokenUsage => !!u);
   if (!reported.length) return undefined;
   return reported.reduce<UsageView>(

@@ -17,7 +17,7 @@ const T1 = "22222222-2222-4222-8222-222222222222";
 type Call = { method: string; path: string; body?: Record<string, unknown> };
 
 /** An in-memory agentforge-backend answering the board's /api routes. */
-function backend(on: On, opts: { conflict?: boolean } = {}) {
+function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean } = {}) {
   const calls: Call[] = [];
   const settings: Record<string, unknown> = { enabled: false, executor: "cursor", sdd: { enabled: true, workspace: WS } };
   let doc = { id: T1, title: "Login page", path: `${WS}/${P1}/${T1}/task.md`, revision: "r1", content: "# Login page\n" };
@@ -62,6 +62,13 @@ function backend(on: On, opts: { conflict?: boolean } = {}) {
         return json(200, { settings, executors: ["cursor"], hook: { state: "active", detail: "", lastRunAt: "2026-10-23T10:00:00.000Z" }, backend: { pid: 42, version: "0.4.0" }, running: 1 });
       case "GET /api/tasks":
         return json(200, [{ id: "t-1", title: "Build login", orderStatus: "executing", worker: "cursor", model: "composer-2.5", updatedAt: "" }]);
+      case "GET /api/savings":
+        if (opts.savingsDown) return json(500, { error: "ledger unreadable" });
+        return json(200, {
+          today: { delegatedTokens: 0, claudeTokens: 120, savedPct: null },
+          week: { delegatedTokens: 12_400, claudeTokens: 3_100, savedPct: 75 },
+          all: { delegatedTokens: 3_400_000, claudeTokens: 3_600_000, savedPct: -6 },
+        });
       case "GET /api/runtime":
         return json(200, { executors: { cursor: runtime } });
       case "POST /api/settings": {
@@ -213,11 +220,35 @@ test("auto mode opens the board when the session starts", { options: { board: "a
   await ui.unmount();
 });
 
+test("the board shows estimated token savings per period", async ($, on) => {
+  backend(on);
+  await openBoard($);
+  const ui = await $.ui.mount({ ...PANE, surface: "desktop" });
+  expect((await ui.find({ type: "Text", text: /^Token savings \(estimate\)$/ }))?.text).toBeDefined();
+  expect((await ui.find({ type: "Text", text: /^delegated 0 · Claude ~120$/ }))?.text).toBeDefined();
+  expect((await ui.find({ type: "Text", text: /^—$/ }))?.text).toBeDefined();
+  expect((await ui.find({ type: "Text", text: /^delegated 12\.4k · Claude ~3\.1k$/ }))?.text).toBeDefined();
+  expect((await ui.find({ type: "Text", text: /^75% saved$/ }))?.text).toBeDefined();
+  expect((await ui.find({ type: "Text", text: /^delegated 3\.4M · Claude ~3\.6M$/ }))?.text).toBeDefined();
+  expect((await ui.find({ type: "Text", text: /^-6% saved$/ }))?.text).toBeDefined();
+  await ui.unmount();
+});
+
+test("a failed savings fetch hides the section and keeps the board", async ($, on) => {
+  backend(on, { savingsDown: true });
+  await openBoard($);
+  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
+  expect(await ui.find({ type: "Text", text: /Token savings/ })).toBeUndefined();
+  expect(await ui.find({ key: "auto-on" })).toBeDefined();
+  await ui.unmount();
+});
+
 test("the board on mobile is text only", async ($, on) => {
   backend(on);
   await openBoard($);
   const ui = await $.ui.mount({ ...PANE, surface: "mobile" });
   expect((await ui.find({ type: "Text", text: /Auto-dispatch OFF/ }))?.text).toMatch(/SDD on/);
   expect(await ui.findAll({ type: "Button" })).toHaveLength(0);
+  expect(await ui.find({ type: "Text", text: /Token savings/ })).toBeUndefined();
   await ui.unmount();
 });
