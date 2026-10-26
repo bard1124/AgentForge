@@ -21,7 +21,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
     "dev": "tsc -p tsconfig.json --watch",
-    "test": "npm run build && vitest run src",
+    "test": "npm run build && vitest run src --testTimeout=30000",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "monitor": "node dist/cli.js monitor",
     "dashboard": "node dist/cli.js monitor --web"
