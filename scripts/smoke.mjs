@@ -182,4 +182,8 @@ fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} passed on ${process.platform}`);
+if (process.env.GITHUB_STEP_SUMMARY) {
+  const rows = results.map((r) => `| ${r.ok ? "✅" : "❌"} | ${r.name} |`).join("\n");
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### Smoke test on ${process.platform}: ${results.length - failed.length}/${results.length} passed\n\n| | Step |\n|---|---|\n${rows}\n\n`);
+}
 process.exit(failed.length ? 1 : 0);
