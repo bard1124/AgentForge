@@ -181,9 +181,9 @@ agentforge tasks | show <task_id>
 
 ## 更新与卸载
 
-看板的 **Plugin update** 区，或 `agentforge update status|check|apply`，从 `origin` 更新本仓库。打开看板时每天最多检查一次（多个看板共享）；**Check for updates** 立即检查；查看状态只读本地缓存。`origin` 必须是 `package.json` 中登记的仓库。
+看板的 **Plugin update** 区，或 `agentforge update status|check|apply`，从 `origin` 更新本仓库。打开看板时每天最多检查一次（多个看板共享）；**Update to latest** 一键检查并安装，**Check for updates** 只检查；查看状态只读本地缓存。`origin` 必须是 `package.json` 中登记的仓库。
 
-更新即快进当前分支，然后执行 `npm ci`、`npm run build` 并重装插件。只有已跟踪文件干净、分支可快进且没有运行中的任务时才执行；有本地改动、分叉、离线或任务忙碌时会阻止并说明原因。不会 stash、reset、强推，也不会动 SDD 文档等未跟踪文件。依赖安装或重装失败时，**Retry install** 从该步骤继续。完成后重启后台（看板会提供按钮），并运行 `/reload-plugins`。
+更新即快进当前分支，然后执行 `npm ci`、`npm run build` 并重装插件。只有已跟踪文件干净、分支可快进且没有运行中的任务时才执行；有本地改动、分叉、离线或任务忙碌时会阻止并说明原因。不会 stash、reset、强推，也不会动 SDD 文档等未跟踪文件。依赖安装或重装失败时，**Retry install** 从该步骤继续。从看板更新时，完成后后台会自动重启（有任务运行时等任务结束），之后运行 `/reload-plugins`。运行中的后台比仓库旧时（按 commit 比较，版本号不变的更新也能发现），看板会提供 **Restart backend**。
 
 `agentforge uninstall [--claude <path>]` 移除插件和 marketplace；`~/.agentforge` 中的任务记录和设置保留。
 

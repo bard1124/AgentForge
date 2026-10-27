@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { ForgeConfig } from "./config.js";
 import { isRetryableError } from "./errors.js";
 import { Forge, ForgeError, orderStatus } from "./forge.js";
+import { progressFile } from "./progress.js";
 import { recordTraffic } from "./savings.js";
 import { SddError, SddStore } from "./sdd.js";
 import { estimateTokens } from "./tokens.js";
@@ -184,7 +185,8 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
         baseline: task.baseline.isRepo ? { branch: task.baseline.branch, head: task.baseline.head } : null,
         warnings,
         wait_command: waitCommand(config.home, task.id),
-        next: "Run wait_command as a background shell command to be notified when the task ends; forge_status shows progress meanwhile.",
+        progress_file: progressFile(config.home, task.id),
+        next: "Run wait_command as a background shell command to be notified when the task ends; forge_status shows progress meanwhile. progress_file is a Markdown page of the task that stays current; the user can keep it open in the editor.",
       };
     }),
   );

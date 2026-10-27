@@ -16,6 +16,14 @@ import type { ConversationInfo, Worker, WorkerRun, WorkerSession } from "./worke
 
 export class ForgeError extends Error {}
 
+export type CancelSource = "forge" | "forge_cancel" | "board" | "cli";
+const CANCEL_SOURCE: Record<CancelSource, string> = {
+  forge: "by AgentForge",
+  forge_cancel: "by the supervisor (forge_cancel)",
+  board: "from the board",
+  cli: "from the terminal (Ctrl+C)",
+};
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** The lifecycle Claude and the board see; `uncertain` means the outcome must be checked before re-dispatching. */
@@ -224,6 +232,8 @@ export function sumUsage(turns: Turn[]): UsageView | undefined {
  */
 export class Forge {
   private readonly live = new Map<string, LiveTask>();
+  /** Called once a dispatched task has started; the backend opens its progress page here. */
+  onDispatched?: (task: Task) => void;
 
   constructor(
     private readonly config: ForgeConfig,
@@ -402,6 +412,7 @@ export class Forge {
       const again = isRetryableError(err) ? ` forge_retry with task_id ${task.id} tries again on the same task.` : "";
       throw new ForgeError(`Task ${task.id} could not start: ${(err as Error).message}${again}`, { cause: err });
     }
+    this.onDispatched?.(task);
     return { task, warnings };
   }
 
@@ -551,11 +562,12 @@ export class Forge {
   }
 
   /** Cancels the running turn but keeps the agent and queued follow-ups; resume() picks it up again. */
-  async pause(id: string): Promise<Task> {
+  async pause(id: string, by: CancelSource = "forge"): Promise<Task> {
     const live = this.live.get(id);
     const task = this.get(id);
     if (task.status !== "running") throw new ForgeError(`Task ${id} is not running (status: ${task.status}).`);
     if (!live?.run) throw new ForgeError(`Task ${id} is still starting or owned by another AgentForge process (pid ${task.ownerPid}); try again shortly.`);
+    this.addStep(task, { kind: "status", text: `Pause requested ${CANCEL_SOURCE[by]}.` });
     live.pausing = true;
     await live.run.cancel();
     await live.done;
@@ -572,9 +584,10 @@ export class Forge {
     return task.turns.at(-1)!;
   }
 
-  async cancel(id: string): Promise<Task> {
+  async cancel(id: string, by: CancelSource = "forge_cancel"): Promise<Task> {
     if (this.get(id).status === "paused") {
       const { task } = await this.claim(id);
+      this.addStep(task, { kind: "status", text: `Cancelled ${CANCEL_SOURCE[by]}.` });
       const last = task.turns.at(-1);
       if (last?.status === "paused") last.status = "cancelled";
       task.status = "cancelled";
@@ -587,6 +600,7 @@ export class Forge {
     if (task.status !== "running") throw new ForgeError(`Task ${id} is not running (status: ${task.status}).`);
     if (!live?.run) throw new ForgeError(`Task ${id} is owned by another AgentForge process (pid ${task.ownerPid}).`);
     task.pending = [];
+    this.addStep(task, { kind: "status", text: `Cancel requested ${CANCEL_SOURCE[by]}.` });
     live.cancelling = true;
     await live.run.cancel();
     await live.done;
