@@ -181,9 +181,9 @@ agentforge tasks | show <task_id>
 
 ## Updates and uninstall
 
-The board's **Plugin update** section, or `agentforge update status|check|apply`, updates this checkout from `origin`. Opening the board checks at most once a day (shared across boards); **Update to latest** checks and installs in one click, **Check for updates** only checks; viewing the status only reads the local cache. `origin` must be the repository named in `package.json`.
+The board's **Plugin update** section, or `agentforge update status|check|apply`, updates this checkout from `origin`. Opening the board checks at most once a day (shared across boards); **Check for updates** checks right away; viewing the status only reads the local cache. `origin` must be the repository named in `package.json`.
 
-An update is a fast-forward of the current branch followed by `npm ci`, `npm run build`, and a reinstall of the plugin. It runs only when tracked files are clean, the branch can fast-forward, and no task is running; local changes, a diverged branch, being offline, or busy tasks block it with the reason. It never stashes, resets, force-pushes, or touches untracked files such as SDD documents. If dependencies or the reinstall failed, **Retry install** resumes from that step. From the board the backend then restarts by itself, waiting for running tasks to finish; run `/reload-plugins` afterwards. When the running backend is older than the checkout (compared by commit, so it also shows for updates that keep the version number), the board offers **Restart backend**.
+An update is a fast-forward of the current branch followed by `npm ci`, `npm run build`, and a reinstall of the plugin. It runs only when tracked files are clean, the branch can fast-forward, and no task is running; local changes, a diverged branch, being offline, or busy tasks block it with the reason. It never stashes, resets, force-pushes, or touches untracked files such as SDD documents. If dependencies or the reinstall failed, **Retry install** resumes from that step. Afterwards restart the backend (the board offers it) and run `/reload-plugins`.
 
 `agentforge uninstall [--claude <path>]` removes the plugin and its marketplace; task records and settings in `~/.agentforge` stay.
 

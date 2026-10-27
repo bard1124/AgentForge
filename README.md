@@ -150,9 +150,9 @@ SDD 有独立开关，在看板中设置，默认开启；工作区默认 `~/.ag
 
 ### 检查并安装插件更新
 
-看板底部折叠的「Plugin update」区，或 `agentforge update status|check|apply`，可以从 `origin` 更新本仓库。打开看板时每天最多自动检查一次；「Update to latest」一键检查并安装，「Check for updates」只检查。
+看板底部折叠的「Plugin update」区，或 `agentforge update status|check|apply`，可以从 `origin` 更新本仓库。打开看板时每天最多自动检查一次；「Check for updates」立即检查。
 
-只有已跟踪文件干净、当前分支可快进且没有运行中的任务时才会更新：快进后执行 `npm ci`、`npm run build` 并重装插件。不会 stash、reset、强推，也不会动 SDD 文档等未跟踪文件。从看板更新时后台会自动重启（有任务运行时等任务结束），之后在 Claude Code 中运行 `/reload-plugins`。
+只有已跟踪文件干净、当前分支可快进且没有运行中的任务时才会更新：快进后执行 `npm ci`、`npm run build` 并重装插件。不会 stash、reset、强推，也不会动 SDD 文档等未跟踪文件。更新后按看板提示重启后台，并在 Claude Code 中运行 `/reload-plugins`。
 
 ### 多个会话一起使用
 

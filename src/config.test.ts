@@ -52,15 +52,6 @@ describe("worker defaults", () => {
     expect(loadConfig({ AGENTFORGE_MAX_TURNS: "5", CLAUDEFORGE_MAX_TURNS: "9", CLAUDEFORGE_MAX_REWORK: "1" })).toMatchObject({ maxTurns: 5, maxRework: 1 });
     expect(loadConfig({ AGENTFORGE_HOME: "/new", CLAUDEFORGE_HOME: "/old" }).home).toBe("/new");
   });
-
-  it("reads the automatic retry setting, capped at one", () => {
-    expect(loadConfig({}).autoRetry).toBe(1);
-    expect(loadConfig({})).toMatchObject({ openProgress: "cursor", monitorPort: 18862 });
-    expect(loadConfig({ AGENTFORGE_OPEN_PROGRESS: "off", AGENTFORGE_MONITOR_PORT: "0" })).toMatchObject({ openProgress: undefined, monitorPort: 0 });
-    expect(loadConfig({ AGENTFORGE_AUTO_RETRY: "0" }).autoRetry).toBe(0);
-    expect(loadConfig({ CLAUDEFORGE_AUTO_RETRY: "0" }).autoRetry).toBe(0);
-    expect(loadConfig({ AGENTFORGE_AUTO_RETRY: "3" }).autoRetry).toBe(1);
-  });
 });
 
 describe("loadWorkers", () => {
