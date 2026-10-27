@@ -19,6 +19,8 @@ Usage:
                                     Manage the shared agentforge-backend (one per AGENTFORGE_HOME)
   agentforge run [options] <task>  Dispatch a task without Claude Code and stream it (run --help)
   agentforge watch <task_id>       Follow a task's steps live from another terminal
+  agentforge wait <task_id> [--timeout <sec>]
+                                    Block until the task's turn ends, then print one summary line (exit 0 finished, 2 otherwise)
   agentforge monitor [--once | --json | --web [--port 18862]] [--limit n]
                                     Read-only monitor: live terminal view, one snapshot, JSON, or a local web page
   agentforge tasks                 List recent tasks
@@ -49,6 +51,27 @@ Configuration is read from the environment, then from AGENTFORGE_ENV_FILE or
   AGENTFORGE_HOME                   State directory (~/.agentforge)
 The pre-rename CLAUDEFORGE_* names still apply when the AGENTFORGE_* one is unset.
 `;
+
+/** Polls the task record, so it works from any shell while the backend drives the task. */
+async function waitForTask(store: TaskStore, id: string, timeoutMs?: number, pollMs = 3000): Promise<number> {
+  const deadline = timeoutMs === undefined ? Infinity : Date.now() + timeoutMs;
+  for (;;) {
+    const task = store.get(id);
+    if (!task) throw new Error(`No task ${id}`);
+    if (task.status !== "running" && task.status !== "queued") {
+      const turn = task.turns.at(-1);
+      const minutes = (task.activeMs / 60_000).toFixed(1);
+      const detail = turn?.error ? `error: ${turn.error}` : task.replayed?.length ? `${task.replayed.length} replayed tool call(s), check forge_result` : "";
+      out(`${task.id} ${task.status} after ${task.turns.length} turn(s), ${minutes} min${detail ? `; ${detail}` : ""}. Next: forge_result ${task.id}.`);
+      return task.status === "finished" || task.status === "accepted" ? 0 : 2;
+    }
+    if (Date.now() >= deadline) {
+      out(`${task.id} still running. Run the wait again or use forge_status.`);
+      return 3;
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+}
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -419,6 +442,10 @@ async function main(): Promise<number> {
       if (!task) throw new Error(`No task ${args[0] ?? ""}`);
       out(JSON.stringify(task, null, 2));
       return 0;
+    }
+    case "wait": {
+      const timeout = flag(args, "--timeout");
+      return waitForTask(new TaskStore(config.home), args[0] ?? "", timeout === undefined ? undefined : Number(timeout) * 1000);
     }
     case "help":
     case "--help":

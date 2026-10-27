@@ -330,6 +330,22 @@ describe("Forge", () => {
     expect(result.diff).not.toContain("b.txt changed");
   });
 
+  it("shows the tool call a running turn is waiting on", async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    const worker = new FakeWorker(() => ({ messages: [tool("c1", "running", { path: "a.txt" })], result: { status: "finished", result: "ok" }, holdUntil: hold }));
+    const forge = makeForge(worker, { stallWarnSec: 0 });
+    const { task } = await forge.dispatch({ task: "do it", cwd: repo });
+    await new Promise((r) => setTimeout(r, 50));
+
+    const status = forge.status(task.id);
+    expect(status.currentTool).toEqual({ tool: "edit", text: "a.txt", runningSec: expect.any(Number) });
+    expect(status.hint).toMatch(/its edit call \(a\.txt\) has run \d+s/);
+    release();
+    await forge.wait(task.id, 5);
+    expect(forge.status(task.id).currentTool).toBeUndefined();
+  });
+
   it("does not continue automatically when the turn budget is used", async () => {
     const worker = new FakeWorker(() => ({ messages: [], result: { status: "error", error: DROPPED } }));
     const forge = makeForge(worker);

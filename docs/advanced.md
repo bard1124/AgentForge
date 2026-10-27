@@ -62,8 +62,8 @@ SDD 文档的目录结构：
 | `forge_capabilities` | 可用 worker、`mcp.json` 中的 MCP 服务器、默认模型、参数与预算，以及看板当前设置。 |
 | `forge_runtime_info` | 各执行端是否在线、默认模型、含强度的模型目录和支持的权限；不提交任何任务。 |
 | `forge_dispatch` | 用任务说明、验收条件和 `verify_command` 启动后台 agent。带 `order_id`（UUID）保证重试幂等。未指定的 `worker` / `model` / 强度 / 权限跟随看板；可选 `mcp_servers`、`max_turns`、`max_minutes`、`max_rework`。agent 启动后返回 `task_id`、`order_status` 和 `conversation_id`。 |
-| `forge_status` | 状态、`order_status`、当前轮次、最近步骤（消息、思考摘要、工具调用），以及 worker 最后一次事件后的 `idleSec`。传 `since` 只取新步骤。 |
-| `forge_wait` | 阻塞到当前轮次结束，每次最多 240 秒；需要继续等就再调一次。 |
+| `forge_status` | 状态、`order_status`、当前轮次、最近步骤（消息、思考摘要、工具调用）、正在运行的工具调用及已运行秒数（`currentTool`），以及 worker 最后一次事件后的 `idleSec`。传 `since` 只取新步骤。 |
+| `forge_wait` | 阻塞到当前轮次结束，每次最多 240 秒，只返回这次等待期间的新步骤。长任务更适合把 `forge_dispatch` 返回的 `wait_command`（即 `agentforge wait <task_id>`）放到后台 shell 运行，任务结束时 Claude Code 会自动通知，不用轮询。 |
 | `forge_followup` | 给同一个 agent 发消息。运行中时尽量插入当前轮次，否则排队；可恢复空闲、被中断或已验收的任务。 |
 | `forge_result` | 最终报告、派工以来的 git 改动（含新文件）和可选 diff。派工前已有改动的文件标记为 `preExisting`。 |
 | `forge_accept` | 运行验证命令。通过即验收；失败则把输出和反馈发回返工，超过 `max_rework` 后判为拒绝。 |

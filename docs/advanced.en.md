@@ -62,8 +62,8 @@ The workspace defaults to `~/.agentforge/sdd` and is set on the board or with `c
 | `forge_capabilities` | Available workers, MCP servers from `mcp.json`, default model, params, and budgets, and the board's current settings. |
 | `forge_runtime_info` | Whether each executor is online, its default model, model catalog with efforts, and supported permissions; submits nothing. |
 | `forge_dispatch` | Start a background agent with a brief, acceptance criteria, and a `verify_command`. Takes an `order_id` (UUID) for idempotent retries. Unset `worker` / `model` / effort / permission follow the board; optional `mcp_servers`, `max_turns`, `max_minutes`, `max_rework`. Returns `task_id`, `order_status`, and `conversation_id` once the agent has started. |
-| `forge_status` | Status, `order_status`, current turn, recent steps (messages, thinking summaries, tool calls), and `idleSec` since the worker's last event. Pass `since` to get only new steps. |
-| `forge_wait` | Block until the current turn ends, up to 240s per call; call again to keep waiting. |
+| `forge_status` | Status, `order_status`, current turn, recent steps (messages, thinking summaries, tool calls), the tool call still running and for how long (`currentTool`), and `idleSec` since the worker's last event. Pass `since` to get only new steps. |
+| `forge_wait` | Block until the current turn ends, up to 240s per call, returning only the steps emitted during that wait. For long tasks, run the `wait_command` that `forge_dispatch` returns (`agentforge wait <task_id>`) as a background shell command instead: Claude Code tells you when it ends, with no polling. |
 | `forge_followup` | Message the same agent. Steered into a running turn when possible, otherwise queued; resumes idle, interrupted, or accepted tasks. |
 | `forge_result` | Final report, git changes since dispatch (including new files), and an optional diff. Files dirty before dispatch are flagged `preExisting`. |
 | `forge_accept` | Run the verification command. Pass: accepted. Fail: output plus feedback sent back for rework until `max_rework`, then rejected. |

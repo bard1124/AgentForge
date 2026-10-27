@@ -56,6 +56,17 @@ describe("agentforge run / watch (echo plugin, built dist)", () => {
     expect(out).toMatch(/status: rejected/);
   });
 
+  it("wait prints one line for a settled task and exits by outcome", () => {
+    const dir = path.join(home, "tasks");
+    const ids = fs.readdirSync(dir).filter((f) => /^cf-.*\.json$/.test(f)).map((f) => f.slice(0, -5));
+    const record = (id: string) => JSON.parse(fs.readFileSync(path.join(dir, `${id}.json`), "utf8"));
+    const accepted = ids.find((id) => record(id).status === "accepted")!;
+    const rejected = ids.find((id) => record(id).status === "rejected")!;
+    expect(run(["wait", accepted])).toMatchObject({ code: 0, out: expect.stringMatching(new RegExp(`^${accepted} accepted after \\d+ turn\\(s\\), [\\d.]+ min\\. Next: forge_result`)) });
+    expect(run(["wait", rejected]).code).toBe(2);
+    expect(run(["wait", "cf-00000000-000000"]).code).toBe(1);
+  });
+
   it("exits 1 with a readable error when the task cannot start", () => {
     const { code, err } = run(["run", "--worker", "nope", "--cwd", repo, "x"]);
     expect(code).toBe(1);

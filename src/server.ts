@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { AuthenticationError, CursorSdkError } from "@cursor/sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -9,6 +10,20 @@ import { SddError, SddStore } from "./sdd.js";
 import { estimateTokens } from "./tokens.js";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
+
+const CLI = fileURLToPath(new URL("./cli.js", import.meta.url));
+
+/** A shell command that blocks until the task's turn ends; Claude Code reports a finished background command on its own. */
+export function waitCommand(home: string, taskId: string): string {
+  const q = (s: string) => `"${s.replaceAll("\\", "/")}"`;
+  return `AGENTFORGE_HOME=${q(home)} ${q(process.execPath)} ${q(CLI)} wait ${taskId}`;
+}
+
+/** Claude wrote the content itself; echoing it back only costs context. */
+function withoutContent<T extends { content: string }>(doc: T): Omit<T, "content"> {
+  const { content: _content, ...rest } = doc;
+  return rest;
+}
 
 function ok(payload: unknown): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
@@ -60,7 +75,7 @@ function handler(home: string) {
 export const INSTRUCTIONS = [
   "AgentForge hands coding work to a background agent (Cursor by default) and lets you track, steer, and accept it.",
   'Each user message carries a "AgentForge auto-dispatch: ON/OFF" note set from the user\'s board; follow the latest one. When OFF, use these tools only if the user explicitly asks for an agent.',
-  "When dispatching: split work into tasks that touch disjoint files; give forge_dispatch a complete brief, acceptance criteria, a narrow verify_command, cwd, and a fresh UUID order_id. Track with forge_wait/forge_status, steer with forge_followup, review with forge_result (include_diff for anything non-trivial), accept with forge_accept.",
+  "When dispatching: split work into tasks that touch disjoint files; give forge_dispatch a complete brief, acceptance criteria, a narrow verify_command, cwd, and a fresh UUID order_id. To wait, run the returned wait_command as a background shell command (you are notified when it ends) instead of looping forge_wait; forge_status shows progress. Steer with forge_followup, review with forge_result (include_diff for anything non-trivial), accept with forge_accept.",
   "Status `uncertain` means the driving process stopped mid-turn: check forge_result and the files before doing anything, and never re-dispatch the same change under a new order_id. Never commit or push unless the user asks.",
 ].join("\n");
 
@@ -160,7 +175,8 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
         budget: { max_turns: task.maxTurns, max_minutes: task.maxTaskMs / 60_000 },
         baseline: task.baseline.isRepo ? { branch: task.baseline.branch, head: task.baseline.head } : null,
         warnings,
-        next: "Use forge_wait or forge_status to follow progress.",
+        wait_command: waitCommand(config.home, task.id),
+        next: "Run wait_command as a background shell command to be notified when the task ends; forge_status shows progress meanwhile.",
       };
     }),
   );
@@ -186,18 +202,21 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
     "forge_wait",
     {
       title: "Wait for a task",
-      description: "Block until the task's current turn ends or timeout_sec elapses, then return its status. Prefer this over repeated forge_status polling.",
+      description:
+        "Block until the task's current turn ends or timeout_sec elapses, then return its status with only the steps emitted during this wait " +
+        "(pass since=0 for the history). For long tasks prefer the background command in forge_dispatch's `wait_command`: it notifies you when the task ends without polling.",
       inputSchema: {
         ...lookup,
         timeout_sec: z.number().int().min(1).max(240).optional().describe("Default 120, at most 240; call again to keep waiting."),
-        since: z.number().int().min(0).optional(),
+        since: z.number().int().min(0).optional().describe("Return steps after this seq; default: the seq when this wait began."),
       },
       annotations: { readOnlyHint: true },
     },
     handle("forge_wait", async (a) => {
       const id = resolve(a);
+      const since = a.since ?? forge.get(id).stepSeq;
       const settled = await forge.wait(id, a.timeout_sec ?? 120);
-      return { settled, ...forge.status(id, a.since) };
+      return { settled, ...forge.status(id, since) };
     }),
   );
 
@@ -269,7 +288,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
     },
     handle("forge_retry", async (a) => {
       const turn = await forge.retry(a.task_id);
-      return { task_id: a.task_id, turn: turn.index, status: "running", next: "Use forge_wait to follow progress." };
+      return { task_id: a.task_id, turn: turn.index, status: "running", wait_command: waitCommand(config.home, a.task_id), next: "Run wait_command in the background, or forge_wait." };
     }),
   );
 
@@ -325,7 +344,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
       description:
         "Task contracts (goal, scope, plan, acceptance) in the SDD workspace chosen on the board, one task.md per task, grouped by project name. Dispatches nothing. " +
         "get_workspace: dir and whether SDD is on. create_project: by name, returns the existing project if the name exists. create_task: pass the full plan as content (otherwise a template is written). " +
-        "save_task: replaces task.md only if base_revision matches the current revision (read_task first); a conflict saves nothing. Writes are refused while SDD is switched off; reads still work. " +
+        "save_task: replaces task.md only if base_revision matches the current revision (read_task first); a conflict saves nothing. create_task and save_task return the id, path and revision, not the content. Writes are refused while SDD is switched off; reads still work. " +
         "Hand the returned path to forge_dispatch.",
       inputSchema: {
         action: z.enum(["get_workspace", "list_projects", "create_project", "list_tasks", "create_task", "read_task", "save_task"]),
@@ -353,11 +372,11 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
           case "list_tasks":
             return { tasks: sdd.listTasks(need(a.project_id, "project_id")) };
           case "create_task":
-            return sdd.createTask(need(a.project_id, "project_id"), { title: need(a.title, "title"), content: a.content, createdBy: "claude" });
+            return withoutContent(sdd.createTask(need(a.project_id, "project_id"), { title: need(a.title, "title"), content: a.content, createdBy: "claude" }));
           case "read_task":
             return sdd.readTask(need(a.project_id, "project_id"), need(a.task_id, "task_id"));
           case "save_task":
-            return sdd.saveTask(need(a.project_id, "project_id"), need(a.task_id, "task_id"), need(a.content, "content"), need(a.base_revision, "base_revision"));
+            return withoutContent(sdd.saveTask(need(a.project_id, "project_id"), need(a.task_id, "task_id"), need(a.content, "content"), need(a.base_revision, "base_revision")));
         }
       } catch (err) {
         if (err instanceof SddError) throw new ForgeError(err.message);

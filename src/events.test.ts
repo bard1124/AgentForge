@@ -44,7 +44,7 @@ describe("summarizeArgs", () => {
 
   it("falls back to truncated JSON", () => {
     expect(summarizeArgs({ x: 1 })).toBe('{"x":1}');
-    expect(summarizeArgs({ x: "y".repeat(500) }).length).toBe(160);
+    expect(summarizeArgs({ x: "y".repeat(500) }).length).toBe(400);
   });
 });
 

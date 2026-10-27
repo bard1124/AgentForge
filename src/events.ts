@@ -11,13 +11,13 @@ export function truncate(text: string, max: number): string {
 /** Picks the most informative argument of a tool call for a one-line summary. */
 export function summarizeArgs(args: unknown): string {
   if (args === undefined || args === null) return "";
-  if (typeof args !== "object") return truncate(String(args), 160);
+  if (typeof args !== "object") return truncate(String(args), 400);
   const record = args as Record<string, unknown>;
   for (const key of ARG_KEYS) {
     const value = record[key];
-    if (typeof value === "string" && value) return truncate(value, 160);
+    if (typeof value === "string" && value) return truncate(value, 400);
   }
-  return truncate(JSON.stringify(args), 160);
+  return truncate(JSON.stringify(args), 400);
 }
 
 /**

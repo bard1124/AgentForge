@@ -136,6 +136,8 @@ export interface StatusView {
   agentId?: string;
   turns: number;
   currentTurn?: { index: number; status: Turn["status"]; prompt: string; elapsedSec: number };
+  /** The tool call still running, while the turn runs: what the worker is waiting on. */
+  currentTool?: { tool: string; text: string; runningSec: number };
   pendingFollowups: number;
   /** Seconds since the worker last emitted anything; only set while running. */
   idleSec?: number;
@@ -446,6 +448,7 @@ export class Forge {
         prompt: truncate(turn.prompt, 200),
         elapsedSec: Math.round(((turn.endedAt ? Date.parse(turn.endedAt) : Date.now()) - Date.parse(turn.startedAt)) / 1000),
       },
+      currentTool: this.currentTool(task),
       pendingFollowups: task.pending.length,
       idleSec,
       lastError,
@@ -619,6 +622,15 @@ export class Forge {
       usage: await this.usageOf(task),
       eventLog: this.store.eventFile(task.id),
     };
+  }
+
+  private currentTool(task: Task): StatusView["currentTool"] {
+    if (task.status !== "running") return undefined;
+    const step = [...task.steps].reverse().find((s) => s.kind === "tool");
+    if (!step || step.toolStatus !== "running") return undefined;
+    const tool = step.tool ?? "tool";
+    const text = step.text.startsWith(`${tool} `) ? step.text.slice(tool.length + 1) : step.text;
+    return { tool, text, runningSec: Math.round((Date.now() - Date.parse(step.at)) / 1000) };
   }
 
   /** Files that other tasks in the same directory wrote since this one started, mapped to the task id. */
@@ -961,6 +973,10 @@ export class Forge {
       case "running":
       case "queued":
         if (idleSec !== undefined && idleSec >= this.config.stallWarnSec) {
+          const tool = this.currentTool(task);
+          if (tool) {
+            return `Worker has emitted nothing for ${idleSec}s while its ${tool.tool} call (${truncate(tool.text, 120)}) has run ${tool.runningSec}s. The command may hang or wait for input. Tell the user; forge_followup can tell the worker to stop it, or forge_cancel ends the turn.`;
+          }
           return `Worker has emitted nothing for ${idleSec}s. It may be waiting on the model backend or stalled. Tell the user; if it stays silent, forge_cancel then forge_followup to retry on the same agent.`;
         }
         return "Worker is busy. Use forge_wait to block until it finishes, or forge_followup to steer it.";
