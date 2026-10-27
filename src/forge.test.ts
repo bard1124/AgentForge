@@ -490,6 +490,68 @@ describe("Forge", () => {
   });
 });
 
+describe("worktree isolation", () => {
+  const editA = (text: string) =>
+    new FakeWorker((cwd) => {
+      fs.writeFileSync(path.join(cwd, "a.txt"), text);
+      fs.writeFileSync(path.join(cwd, "new.txt"), "new\n");
+      return { messages: [tool("c1", "completed", { path: path.join(cwd, "a.txt") })], result: { status: "finished", result: "ok" } };
+    });
+  const worktrees = () => execFileSync("git", ["worktree", "list"], { cwd: repo, encoding: "utf8" }).trim().split("\n").length;
+
+  it("works in its own checkout and applies the changes back on accept", async () => {
+    const worker = editA("from worktree\n");
+    const forge = makeForge(worker);
+    const { task, warnings } = await forge.dispatch({ task: "edit a", cwd: repo, isolation: "worktree" });
+    await forge.wait(task.id, 5);
+
+    const workdir = forge.get(task.id).cwd;
+    expect(workdir).toBe(path.join(home, "worktrees", task.id));
+    expect(worker.sessionOpts[0]?.cwd).toBe(workdir);
+    expect(worker.prompts[0]).toMatch(/git worktree of/);
+    expect(warnings.join()).toMatch(/uncommitted file\(s\).*not in the worktree/);
+    expect(fs.readFileSync(path.join(repo, "a.txt"), "utf8")).toBe("one\n");
+    expect((await forge.result(task.id, { includeDiff: true })).diff).toContain("+from worktree");
+
+    const accepted = await forge.accept(task.id, {});
+    expect(accepted.action).toBe("accepted");
+    expect(accepted.applied).toMatch(/applied to .* as uncommitted edits/);
+    expect(fs.readFileSync(path.join(repo, "a.txt"), "utf8")).toBe("from worktree\n");
+    expect(fs.readFileSync(path.join(repo, "new.txt"), "utf8")).toBe("new\n");
+    expect(fs.readFileSync(path.join(repo, "dirty.txt"), "utf8")).toBe("already dirty\n");
+    expect(fs.existsSync(workdir)).toBe(false);
+    expect(worktrees()).toBe(1);
+    expect(forge.get(task.id)).toMatchObject({ cwd: repo, worktree: { state: "applied" } });
+  });
+
+  it("keeps the worktree and a patch when the changes conflict, and cleans up on delete", async () => {
+    const forge = makeForge(editA("from worktree\n"));
+    const { task } = await forge.dispatch({ task: "edit a", cwd: repo, isolation: "worktree" });
+    await forge.wait(task.id, 5);
+    fs.writeFileSync(path.join(repo, "a.txt"), "edited meanwhile\n");
+
+    const res = await forge.accept(task.id, {});
+    expect(res.action).toBe("conflict");
+    expect(res.applied).toMatch(/do not apply cleanly/);
+    const wt = forge.get(task.id).worktree!;
+    expect(wt.state).toBe("conflict");
+    expect(fs.existsSync(wt.patch!)).toBe(true);
+    expect(fs.readFileSync(path.join(repo, "a.txt"), "utf8")).toBe("edited meanwhile\n");
+
+    await forge.delete(task.id);
+    expect(fs.existsSync(wt.root)).toBe(false);
+    expect(fs.existsSync(wt.patch!)).toBe(false);
+    expect(worktrees()).toBe(1);
+  });
+
+  it("refuses isolation outside a git repository", async () => {
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), "cf-plain-"));
+    const forge = makeForge(editA("x\n"));
+    await expect(forge.dispatch({ task: "t", cwd: plain, isolation: "worktree" })).rejects.toThrow(/needs a git repository/);
+    fs.rmSync(plain, { recursive: true, force: true });
+  });
+});
+
 describe("orders and the board", () => {
   const finished = () => ({ messages: [], result: { status: "finished" as const, result: "ok" } });
   const ORDER = "7d2615b6-a00f-42cb-8261-39900ec7c177";

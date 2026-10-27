@@ -87,6 +87,12 @@ SDK 断线恢复时可能把最后几个工具调用再执行一遍。AgentForge
 
 每个任务都有 `order_status`：`queued`、`dispatching`、`executing`、`paused`（在看板上被暂停，不计入运行中、不阻止重启后台，重启后仍为暂停；Claude Code 不应重新派发，从看板恢复）、`completed`、`failed`、`blocked`（预算用完）、`cancelled` 或 `uncertain`。`uncertain` 表示轮次中途被打断（例如后台在运行中停止）：先检查 agent 会话和实际文件，再用原 `order_id` 查询，不要新建任务。`conversation_id` 是 Cursor agent 的 id，与 order id 不同。
 
+## 并行任务与 worktree 隔离
+
+多个任务同时改同一个仓库时，给 `forge_dispatch` 传 `isolation: "worktree"`。任务会在 `~/.agentforge/worktrees/<task_id>` 下以当前 HEAD 新建一个 git worktree，分支为 `agentforge/<task_id>`，agent 只在这个目录里改，其 diff 也只包含自己的改动。`forge_accept` 校验通过后，把改动以未提交的形式应用回原目录，再删除 worktree 和分支。应用冲突时 worktree 保留，补丁留在 `~/.agentforge/worktrees/<task_id>.patch`，可以手动 `git apply --3way` 后删除该任务。
+
+worktree 从 HEAD 开始：原目录里未提交的改动不在其中，`node_modules`、构建产物等被忽略的文件也没有，需要的话 agent 或 `verify_command` 要先在 worktree 里安装或构建。
+
 ## 预算与用量
 
 每个任务有轮次预算（`max_turns`，默认 20）和 worker 时间预算（`max_minutes`，默认 60，只计算轮次运行的时间）。超出时间预算的轮次会被取消；任一预算用完后，新轮次会被拒绝，并提示 Claude Code 先征求你的同意。`forge_status` 和 `forge_result` 以 `used/max` 显示 `budget`。

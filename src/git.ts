@@ -48,6 +48,41 @@ export async function captureBaseline(cwd: string): Promise<GitBaseline> {
   return { isRepo: true, head, branch, dirty };
 }
 
+/** Adds a worktree at `root` on a new `branch` from HEAD; returns the repo top and where `cwd` sits inside it. */
+export async function addWorktree(cwd: string, root: string, branch: string): Promise<{ top: string; rel: string }> {
+  const top = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
+  const rel = (await git(cwd, ["rev-parse", "--show-prefix"])).trim();
+  await git(top, ["worktree", "add", "-q", "-b", branch, root, "HEAD"]);
+  return { top, rel };
+}
+
+/** Everything the worktree changed since `base` (commits, edits, new files) as one binary patch. */
+export async function worktreePatch(root: string, base: string): Promise<string> {
+  await git(root, ["add", "-A"]);
+  return git(root, ["diff", "--cached", "--binary", base]);
+}
+
+/** Applies a patch to `top`'s working tree, falling back to a three-way merge; throws with git's message when it cannot. */
+export async function applyPatch(top: string, patchFile: string): Promise<"clean" | "3way"> {
+  try {
+    await git(top, ["apply", "--whitespace=nowarn", patchFile]);
+    return "clean";
+  } catch {
+    try {
+      await git(top, ["apply", "--3way", "--whitespace=nowarn", patchFile]);
+      return "3way";
+    } catch (err) {
+      const e = err as { stderr?: string; message: string };
+      throw new Error((e.stderr || e.message).trim());
+    }
+  }
+}
+
+export async function removeWorktree(top: string, root: string, branch: string): Promise<void> {
+  await git(top, ["worktree", "remove", "--force", root]).catch(() => undefined);
+  await git(top, ["branch", "-D", branch]).catch(() => undefined);
+}
+
 export async function summarizeChanges(cwd: string, baseline: GitBaseline): Promise<ChangeSummary> {
   if (!baseline.isRepo || !baseline.head) {
     return { isRepo: false, commits: [], diffStat: "", files: [] };

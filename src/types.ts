@@ -103,6 +103,19 @@ export interface Task {
   maxTaskMs: number;
   /** Worker running time summed over finished turns. */
   activeMs: number;
+  /** Set when the task runs in its own git worktree; `cwd` points inside it until the changes are applied back. */
+  worktree?: {
+    /** The directory the task was dispatched for. */
+    origin: string;
+    /** That directory's repo top and its baseline at dispatch, restored once the changes are applied. */
+    top: string;
+    originBaseline: GitBaseline;
+    root: string;
+    branch: string;
+    state: "active" | "applied" | "conflict" | "removed";
+    /** Patch left for manual application after a conflict. */
+    patch?: string;
+  };
   /** Repo-relative (or absolute, outside cwd) paths the worker's edit tools wrote. */
   touched?: string[];
   /** Tool calls the worker ran again after a reconnect; a replayed edit may have applied twice. */

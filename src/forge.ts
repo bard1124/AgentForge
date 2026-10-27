@@ -6,7 +6,7 @@ import type { ModelParameterValue, SDKMessage, TokenUsage } from "@cursor/sdk";
 import { type Delegation, type ModelEntry, type Permission, readDelegation } from "./delegation.js";
 import { isRetryableError, isTransientMessage } from "./errors.js";
 import { StepRecorder, truncate } from "./events.js";
-import { captureBaseline, diffFor, summarizeChanges } from "./git.js";
+import { addWorktree, applyPatch, captureBaseline, diffFor, removeWorktree, summarizeChanges, worktreePatch } from "./git.js";
 import { loadMcpServers, McpConfigError, pickMcpServers } from "./mcp-config.js";
 import { buildBrief, buildReworkPrompt } from "./prompts.js";
 import { TaskStore } from "./store.js";
@@ -105,6 +105,8 @@ export interface DispatchInput {
   maxRework?: number;
   maxTurns?: number;
   maxMinutes?: number;
+  /** "worktree": work in a git worktree of its own; accepting applies the changes back to `cwd`. */
+  isolation?: "worktree";
 }
 
 export interface BudgetView {
@@ -325,20 +327,38 @@ export class Forge {
     if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new ForgeError(`cwd does not exist or is not a directory: ${cwd}`);
     this.resolveMcp(input.mcpServers ?? []);
 
-    const busy = this.list().filter((t) => t.cwd === cwd && t.status === "running");
-    if (busy.length) {
-      warnings.push(`Other running task(s) in the same directory: ${busy.map((t) => t.id).join(", ")}. Edits may conflict.`);
+    const id = this.store.newId();
+    const isolated = input.isolation === "worktree";
+    const busy = this.list().filter((t) => (t.worktree?.origin ?? t.cwd) === cwd && t.status === "running" && !t.worktree);
+    if (busy.length && !isolated) {
+      warnings.push(`Other running task(s) in the same directory: ${busy.map((t) => t.id).join(", ")}. Edits may conflict; isolation "worktree" gives each task its own checkout.`);
     }
-    const baseline = await captureBaseline(cwd);
+    const originBaseline = await captureBaseline(cwd);
+    let workdir = cwd;
+    let worktree: Task["worktree"];
+    if (isolated) {
+      if (!originBaseline.isRepo) throw new ForgeError(`isolation "worktree" needs a git repository; ${cwd} is not one.`);
+      const root = path.join(this.config.home, "worktrees", id);
+      const branch = `agentforge/${id}`;
+      const { top, rel } = await addWorktree(cwd, root, branch).catch((err: Error) => {
+        throw new ForgeError(`Could not create a worktree for ${cwd}: ${err.message}`);
+      });
+      workdir = path.join(root, rel);
+      worktree = { origin: cwd, top, originBaseline, root, branch, state: "active" };
+      if (originBaseline.dirty.length) warnings.push(`${originBaseline.dirty.length} uncommitted file(s) in ${cwd} are not in the worktree; the task starts from HEAD.`);
+      warnings.push(`Working in worktree ${workdir} (branch ${branch}). Ignored files such as node_modules or build output are not there; forge_accept applies the changes back to ${cwd}.`);
+    }
+    const baseline = isolated ? await captureBaseline(workdir) : originBaseline;
     if (!baseline.isRepo) warnings.push("cwd is not a git repository; change tracking is unavailable.");
     else if (baseline.dirty.length) warnings.push(`Working tree already had ${baseline.dirty.length} modified file(s); they are flagged as preExisting in results.`);
 
     const task: Task = {
-      id: this.store.newId(),
+      id,
       orderId: input.orderId,
       orderHash,
       title: input.title?.trim() || truncate(input.task, 80),
-      cwd,
+      cwd: workdir,
+      ...(worktree ? { worktree } : {}),
       worker: workerName,
       model,
       modelParams: modelParams?.length ? modelParams : undefined,
@@ -366,7 +386,11 @@ export class Forge {
     const live: LiveTask = { task, waiters: new Set() };
     this.live.set(task.id, live);
 
-    const brief = buildBrief({ task: input.task, cwd, acceptance: input.acceptance, verifyCommand: input.verifyCommand, context: input.context });
+    const note = worktree
+      ? `You work in a git worktree of ${cwd} at ${workdir}, made for this task; edit files here only, not in ${cwd}. Ignored files (node_modules, build output) are not present; install or build here if you need them. Do not commit.`
+      : undefined;
+    const context = [input.context, note].filter(Boolean).join("\n\n") || undefined;
+    const brief = buildBrief({ task: input.task, cwd: workdir, acceptance: input.acceptance, verifyCommand: input.verifyCommand, context });
     try {
       await this.startTurn(live, brief);
     } catch (err) {
@@ -577,6 +601,10 @@ export class Forge {
       this.live.delete(id);
     }
     if (task.orderId) this.orders.delete(task.orderId);
+    if (task.worktree && (task.worktree.state === "active" || task.worktree.state === "conflict")) {
+      await removeWorktree(task.worktree.top, task.worktree.root, task.worktree.branch);
+      if (task.worktree.patch) fs.rmSync(task.worktree.patch, { force: true });
+    }
     this.store.delete(id);
   }
 
@@ -633,6 +661,47 @@ export class Forge {
     return { tool, text, runningSec: Math.round((Date.now() - Date.parse(step.at)) / 1000) };
   }
 
+  /**
+   * Applies the worktree's changes to the original checkout as uncommitted edits, then removes the worktree
+   * and its branch. On a conflict both stay, and the patch is left in AgentForge's home for a manual apply.
+   */
+  private async applyWorktree(task: Task): Promise<{ ok: boolean; detail: string }> {
+    const wt = task.worktree!;
+    const patch = path.join(this.config.home, "worktrees", `${task.id}.patch`);
+    const content = await worktreePatch(wt.root, task.baseline.head!);
+    if (!content.trim()) {
+      await removeWorktree(wt.top, wt.root, wt.branch);
+      this.restoreOrigin(task, "applied");
+      return { ok: true, detail: `No changes to apply; worktree ${wt.root} removed.` };
+    }
+    fs.writeFileSync(patch, content);
+    try {
+      const how = await applyPatch(wt.top, patch);
+      await removeWorktree(wt.top, wt.root, wt.branch);
+      fs.rmSync(patch, { force: true });
+      this.restoreOrigin(task, "applied");
+      const merged = how === "3way" ? " with a three-way merge (the files are also staged)" : "";
+      this.addStep(task, { kind: "status", text: `Applied worktree changes to ${wt.origin}${merged}.` });
+      return { ok: true, detail: `Changes applied to ${wt.origin} as uncommitted edits${merged}; worktree and branch ${wt.branch} removed.` };
+    } catch (err) {
+      wt.state = "conflict";
+      wt.patch = patch;
+      const detail =
+        `The changes do not apply cleanly to ${wt.origin}: ${truncate((err as Error).message, 400)}. ` +
+        `The worktree (${wt.root}, branch ${wt.branch}) and the patch (${patch}) are kept: apply it in ${wt.origin} by hand (for example \`git apply --3way ${patch}\`) and then delete the task, which removes the worktree; forge_accept tries the apply again.`;
+      this.addStep(task, { kind: "error", text: truncate(detail, 300) });
+      return { ok: false, detail };
+    }
+  }
+
+  private restoreOrigin(task: Task, state: "applied" | "removed"): void {
+    const wt = task.worktree!;
+    wt.state = state;
+    delete wt.patch;
+    task.cwd = wt.origin;
+    task.baseline = wt.originBaseline;
+  }
+
   /** Files that other tasks in the same directory wrote since this one started, mapped to the task id. */
   private otherEditors(task: Task): Map<string, string> {
     const out = new Map<string, string>();
@@ -663,7 +732,10 @@ export class Forge {
     }
   }
 
-  async accept(id: string, input: AcceptInput): Promise<{ task: Task; verification?: Verification; action: "accepted" | "rework" | "rejected" }> {
+  async accept(
+    id: string,
+    input: AcceptInput,
+  ): Promise<{ task: Task; verification?: Verification; action: "accepted" | "rework" | "rejected" | "conflict"; applied?: string }> {
     const live = await this.claim(id);
     const { task } = live;
     if (task.status === "running" || task.status === "queued") throw new ForgeError(`Task ${id} is still running; wait for it first.`);
@@ -677,10 +749,19 @@ export class Forge {
     }
 
     if (!verification || verification.passed) {
+      let applied: string | undefined;
+      if (task.worktree?.state === "active" || task.worktree?.state === "conflict") {
+        const outcome = await this.applyWorktree(task);
+        if (!outcome.ok) {
+          this.persist(task);
+          return { task, verification, action: "conflict", applied: outcome.detail };
+        }
+        applied = outcome.detail;
+      }
       task.status = "accepted";
       this.persist(task);
       await this.release(live);
-      return { task, verification, action: "accepted" };
+      return { task, verification, action: "accepted", ...(applied ? { applied } : {}) };
     }
 
     if ((input.reworkOnFail ?? true) && task.reworkCount < task.maxRework) {

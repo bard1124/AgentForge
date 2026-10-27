@@ -75,7 +75,7 @@ function handler(home: string) {
 export const INSTRUCTIONS = [
   "AgentForge hands coding work to a background agent (Cursor by default) and lets you track, steer, and accept it.",
   'Each user message carries a "AgentForge auto-dispatch: ON/OFF" note set from the user\'s board; follow the latest one. When OFF, use these tools only if the user explicitly asks for an agent.',
-  "When dispatching: split work into tasks that touch disjoint files; give forge_dispatch a complete brief, acceptance criteria, a narrow verify_command, cwd, and a fresh UUID order_id. To wait, run the returned wait_command as a background shell command (you are notified when it ends) instead of looping forge_wait; forge_status shows progress. Steer with forge_followup, review with forge_result (include_diff for anything non-trivial), accept with forge_accept.",
+  "When dispatching: split work into tasks that touch disjoint files, and pass isolation \"worktree\" when several run in one repo at once; give forge_dispatch a complete brief, acceptance criteria, a narrow verify_command, cwd, and a fresh UUID order_id. To wait, run the returned wait_command as a background shell command (you are notified when it ends) instead of looping forge_wait; forge_status shows progress. Steer with forge_followup, review with forge_result (include_diff for anything non-trivial), accept with forge_accept.",
   "Status `uncertain` means the driving process stopped mid-turn: check forge_result and the files before doing anything, and never re-dispatch the same change under a new order_id. Never commit or push unless the user asks.",
 ].join("\n");
 
@@ -140,6 +140,13 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
         max_rework: z.number().int().min(0).max(10).optional().describe("Automatic rework rounds forge_accept may trigger on failed verification."),
         max_turns: z.number().int().min(1).max(100).optional().describe("Cap on worker turns (dispatch + follow-ups + rework)."),
         max_minutes: z.number().min(1).max(600).optional().describe("Cap on cumulative worker running time; a turn over budget is cancelled."),
+        isolation: z
+          .enum(["worktree"])
+          .optional()
+          .describe(
+            "worktree: the agent works in its own git worktree (from HEAD; uncommitted and ignored files such as node_modules are not there). " +
+              "Use it when several tasks run in one repo at once. forge_accept applies the changes back to cwd as uncommitted edits; a conflict keeps the worktree and a patch.",
+          ),
       },
     },
     handle("forge_dispatch", async (a) => {
@@ -158,6 +165,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
         maxRework: a.max_rework,
         maxTurns: a.max_turns,
         maxMinutes: a.max_minutes,
+        isolation: a.isolation,
       });
       return {
         task_id: task.id,
@@ -268,12 +276,12 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
       },
     },
     handle("forge_accept", async (a) => {
-      const { task, verification, action } = await forge.accept(a.task_id, {
+      const { task, verification, action, applied } = await forge.accept(a.task_id, {
         verifyCommand: a.verify_command,
         feedback: a.feedback,
         reworkOnFail: a.rework_on_fail,
       });
-      return { task_id: task.id, action, status: task.status, rework: `${task.reworkCount}/${task.maxRework}`, verification };
+      return { task_id: task.id, action, status: task.status, rework: `${task.reworkCount}/${task.maxRework}`, verification, ...(applied ? { worktree: applied } : {}) };
     }),
   );
 

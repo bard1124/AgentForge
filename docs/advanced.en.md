@@ -87,6 +87,12 @@ When the SDK resumes after a reconnect it can run the last tool calls again. Age
 
 Each task has an `order_status`: `queued`, `dispatching`, `executing`, `paused` (paused on the board: not counted as running, does not block a backend restart, stays paused across one; Claude Code should not re-dispatch it, resume it from the board), `completed`, `failed`, `blocked` (a budget ran out), `cancelled`, or `uncertain`. `uncertain` means the turn was cut off (for example the backend stopped mid-run): check the agent's conversation and the files before doing anything, and look the task up by its original `order_id` rather than creating a new one. `conversation_id` is the Cursor agent id, different from the order id.
 
+## Parallel tasks and worktree isolation
+
+When several tasks change one repository at the same time, pass `isolation: "worktree"` to `forge_dispatch`. The task gets a git worktree from the current HEAD at `~/.agentforge/worktrees/<task_id>` on branch `agentforge/<task_id>`; the agent edits only there, and its diff holds only its own changes. Once `forge_accept` passes, the changes are applied to the original directory as uncommitted edits and the worktree and branch are removed. If they conflict, the worktree stays and the patch is left at `~/.agentforge/worktrees/<task_id>.patch` for a manual `git apply --3way`, after which you delete the task.
+
+A worktree starts from HEAD: uncommitted changes in the original directory are not in it, and neither are ignored files such as `node_modules` or build output, so the agent or `verify_command` has to install or build there first if it needs them.
+
 ## Budgets and usage
 
 Each task has a turn budget (`max_turns`, default 20) and a worker time budget (`max_minutes`, default 60, counting only time a turn is running). A turn that runs past the time budget is cancelled; once either budget is used up, new turns are refused with a message telling Claude Code to ask you first. `forge_status` and `forge_result` show `budget` as `used/max`.
