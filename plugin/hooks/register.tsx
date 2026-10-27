@@ -1,7 +1,7 @@
 import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register, RenderChildren } from "claude-code";
 
-import type { BoardModel, ExecutorRuntime, Permission, SavingsView, Settings, SddView, TaskRow, UpdateView } from "../types/index";
+import type { BoardModel, ExecutorRuntime, Permission, SavingsView, SectionId, Settings, SddView, TaskRow, UpdateView } from "../types/index";
 
 const PANE = "agentforge-board";
 const COMMAND = "forge-board";
@@ -9,7 +9,7 @@ const DEFAULT = "__default__";
 
 const EMPTY: BoardModel = { loaded: false, executors: [], running: 0, runtime: {}, tasks: [], taskOffset: 0, sddOpen: false, updateOpen: false };
 // Change the tag when BoardModel's fields change: it declines what an earlier version stored.
-const board = atom({ plugin: "agentforge", key: "board" } as const, EMPTY, { shape: "board-3" });
+const board = atom({ plugin: "agentforge", key: "board" } as const, EMPTY, { shape: "board-4" });
 
 type Install = { home: string; node: string; cli: string };
 type Conn = { port: number; token: string };
@@ -207,6 +207,17 @@ async function toggleSdd($: EngineInterface, on: boolean): Promise<void> {
   await change($, { sddEnabled: on });
 }
 
+const collapsedOf = (m: BoardModel): SectionId[] => m.settings?.board?.collapsed ?? [];
+const withCollapsed = (m: BoardModel, collapsed: SectionId[]): BoardModel => (m.settings ? { ...m, settings: { ...m.settings, board: { collapsed } } } : m);
+
+/** Collapses or expands a section at once, then saves it; a refused save puts it back. */
+async function toggleSection($: EngineInterface, id: SectionId): Promise<void> {
+  const prev = collapsedOf(await read($, board));
+  const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+  await set($, (m) => withCollapsed(m, next));
+  if (!(await change($, { collapsed: next }))) await set($, (m) => withCollapsed(m, prev));
+}
+
 // --- drawing -----------------------------------------------------------------
 
 type El = ReturnType<EngineInterface["ui"]["resolve"]>;
@@ -257,19 +268,44 @@ function rule(c: Ctx) {
   return <Svg source={RULE_SVG} alt="" height={1} />;
 }
 
+/** A section's ▾ / ▸ toggle; collapsed, the body is dropped and `summary` follows the title. */
+type Fold = { id: SectionId; collapsed: boolean; summary?: RenderChildren; onToggle: () => void };
+
+const fold = ($: EngineInterface, m: BoardModel, id: SectionId, summary?: RenderChildren): Fold => ({
+  id,
+  collapsed: collapsedOf(m).includes(id),
+  summary,
+  onToggle: () => void toggleSection($, id),
+});
+
 /** A settings group: a semibold heading, optional text at its end, then rows split by rules. */
-function section(c: Ctx, title: string, rows: RenderChildren[], aside?: RenderChildren) {
-  const { Box, Text } = c.E;
+function section(c: Ctx, title: string, rows: RenderChildren[], aside?: RenderChildren, f?: Fold) {
+  const { Box, Text, Button } = c.E;
   const kept = rows.filter((r) => r !== null && r !== undefined && r !== false);
+  const heading = <Text weight="semibold">{title}</Text>;
   return (
     <Box flexDirection="column" gap="sm">
-      <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-        <Text weight="semibold">{title}</Text>
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" columnGap="sm">
+        {f ? (
+          <Box flexDirection="row" alignItems="center" columnGap="sm" flexShrink={1}>
+            <Button key={`fold-${f.id}`} plain dimColor onPress={f.onToggle}>
+              {f.collapsed ? "▸" : "▾"}
+            </Button>
+            {heading}
+            {f.collapsed && f.summary !== undefined ? (
+              typeof f.summary === "string" ? <Text size="footnote" dimColor wrap="truncate-end">{f.summary}</Text> : f.summary
+            ) : null}
+          </Box>
+        ) : (
+          heading
+        )}
         {aside ?? null}
       </Box>
-      <Box flexDirection="column" borderStyle="round" {...line(c)} paddingX="md">
-        {kept.flatMap((r, i) => (i === 0 ? [r] : [rule(c), r]))}
-      </Box>
+      {f?.collapsed ? null : (
+        <Box flexDirection="column" borderStyle="round" {...line(c)} paddingX="md">
+          {kept.flatMap((r, i) => (i === 0 ? [r] : [rule(c), r]))}
+        </Box>
+      )}
     </Box>
   );
 }
@@ -362,10 +398,11 @@ const SAVINGS_PERIODS = [
   ["all", "All time"],
 ] as const;
 
-function savingsSection(c: Ctx, m: BoardModel) {
+function savingsSection($: EngineInterface, c: Ctx, m: BoardModel) {
   const { Text } = c.E;
   const s = m.savings;
   if (!s) return null;
+  const today = s.today.savedPct === null ? "Today —" : `Today ${s.today.savedPct}% saved`;
   return section(c, "Token savings (estimate)", [
     ...SAVINGS_PERIODS.map(([key, label]) => {
       const p = s[key];
@@ -373,7 +410,7 @@ function savingsSection(c: Ctx, m: BoardModel) {
       return row(c, label, `delegated ${compact(p.delegatedTokens)} · Claude ~${compact(p.claudeTokens)}`, pct);
     }),
     row(c, <Text size="footnote" dimColor wrap="wrap">Delegated = tokens the executor used; Claude = estimated MCP tool traffic.</Text>, undefined),
-  ]);
+  ], undefined, fold($, m, "savings", today));
 }
 
 function executorSection($: EngineInterface, c: Ctx, m: BoardModel) {
@@ -452,6 +489,7 @@ function executorSection($: EngineInterface, c: Ctx, m: BoardModel) {
         : null,
     ],
     aside,
+    fold($, m, "executor", `${s.executor} · ${s.route?.model ?? "default model"}${s.effort ? ` · ${s.effort}` : ""}`),
   );
 }
 
@@ -517,18 +555,20 @@ function tasksSection($: EngineInterface, c: Ctx, m: BoardModel, controls: boole
         ),
       )
     : [row(c, <Text dimColor>No tasks yet.</Text>, undefined)];
+  const paging = total > TASK_PAGE;
+  const folded = controls ? fold($, m, "tasks") : undefined;
+  const windowed = controls && !folded?.collapsed;
   const move = (key: string, glyph: string, to: number, enabled: boolean) =>
-    controls && enabled ? (
+    windowed && enabled ? (
       <Button key={key} plain onPress={() => void set($, (x) => ({ ...x, taskOffset: to }))}>
         {glyph}
       </Button>
-    ) : controls ? (
+    ) : windowed ? (
       <Text dimColor>{glyph}</Text>
     ) : null;
-  const paging = total > TASK_PAGE;
   const aside = (
     <Box flexDirection="row" columnGap="sm" alignItems="center">
-      {controls && m.tasks.some(deletable)
+      {windowed && m.tasks.some(deletable)
         ? m.taskBusy === "clear"
           ? <Text size="footnote" dimColor>Clearing…</Text>
           : confirmDelete($, c, m, "clear", "tasks-clear", "Clear finished", "POST", "/api/tasks/clear")
@@ -539,7 +579,7 @@ function tasksSection($: EngineInterface, c: Ctx, m: BoardModel, controls: boole
       <Text size="footnote" color={m.running ? "suggestion" : undefined} dimColor={!m.running}>{`${m.running} running`}</Text>
     </Box>
   );
-  return section(c, "Recent tasks", rows, aside);
+  return section(c, "Recent tasks", rows, aside, folded);
 }
 
 function sddSection($: EngineInterface, c: Ctx, m: BoardModel) {
@@ -665,7 +705,7 @@ function sddSection($: EngineInterface, c: Ctx, m: BoardModel) {
       );
     }
   }
-  return section(c, "SDD documents", rows);
+  return section(c, "SDD documents", rows, undefined, fold($, m, "sdd", s.sdd.enabled ? "On" : "Off"));
 }
 
 function updateSection($: EngineInterface, c: Ctx, m: BoardModel) {
@@ -718,7 +758,8 @@ function updateSection($: EngineInterface, c: Ctx, m: BoardModel) {
       ),
     );
   }
-  return section(c, "Plugin update", rows);
+  const summary = u?.state === "available" ? `Update available${u.remote ? ` · ${u.remote}` : ""}` : u?.state === "up_to_date" ? "Up to date" : undefined;
+  return section(c, "Plugin update", rows, undefined, fold($, m, "update", summary));
 }
 
 /** One footnote line at the top: backend and where dispatched work goes. */
@@ -832,7 +873,7 @@ export const register: Register = (on, options) => {
       head,
       m.notice ? <Text size="footnote" color="warning" wrap="wrap">{m.notice}</Text> : null,
       dispatchSection($, c, m),
-      savingsSection(c, m),
+      savingsSection($, c, m),
       executorSection($, c, m),
       sddSection($, c, m),
       tasksSection($, c, m, true),

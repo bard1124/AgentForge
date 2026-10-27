@@ -7,6 +7,10 @@ import path from "node:path";
 export const PERMISSIONS = ["sandbox", "auto-review", "sandbox+auto-review"] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
+/** Board sections that can be collapsed; Dispatch always stays open. */
+export const BOARD_SECTIONS = ["savings", "executor", "sdd", "tasks", "update"] as const;
+export type BoardSection = (typeof BOARD_SECTIONS)[number];
+
 export interface Delegation {
   /** Auto-dispatch: Claude hands implementation work to the executor on its own. */
   enabled: boolean;
@@ -18,6 +22,8 @@ export interface Delegation {
   /** New-session permission, applied once when a task's agent is created; absent follows the executor. */
   permission?: Permission;
   sdd: { enabled: boolean; workspace: string };
+  /** Board layout; absent means every section is expanded. */
+  board?: { collapsed: BoardSection[] };
   updatedAt?: string;
 }
 
@@ -47,6 +53,11 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+/** Known section ids in board order; unknown ids and duplicates drop out. */
+function sectionIds(list: unknown[]): BoardSection[] {
+  return BOARD_SECTIONS.filter((id) => list.includes(id));
+}
+
 /** Validates the stored shape; unknown or missing optional fields fall back to defaults. */
 export function parseDelegation(raw: unknown, home: string, fallbackExecutor = "cursor"): Delegation {
   if (!isObject(raw)) throw new Error("delegation.json is not an object");
@@ -65,6 +76,10 @@ export function parseDelegation(raw: unknown, home: string, fallbackExecutor = "
     if (raw.sdd.enabled !== undefined && typeof raw.sdd.enabled !== "boolean") throw new Error("sdd.enabled must be a boolean");
     out.sdd.enabled = raw.sdd.enabled !== false;
     if (typeof raw.sdd.workspace === "string" && raw.sdd.workspace.trim()) out.sdd.workspace = path.resolve(expandHome(raw.sdd.workspace.trim()));
+  }
+  if (isObject(raw.board) && Array.isArray(raw.board.collapsed)) {
+    const collapsed = sectionIds(raw.board.collapsed);
+    if (collapsed.length) out.board = { collapsed };
   }
   if (typeof raw.updatedAt === "string") out.updatedAt = raw.updatedAt;
   return out;
@@ -88,8 +103,9 @@ export function readDelegation(home: string, fallbackExecutor = "cursor"): Deleg
   }
 }
 
-export function writeDelegation(home: string, settings: Delegation): Delegation {
-  const saved = { ...settings, updatedAt: new Date().toISOString() };
+/** `keepStamp` leaves `updatedAt` alone for layout-only writes, which the prompt hook does not read. */
+export function writeDelegation(home: string, settings: Delegation, keepStamp = false): Delegation {
+  const saved = keepStamp ? { ...settings } : { ...settings, updatedAt: new Date().toISOString() };
   fs.mkdirSync(home, { recursive: true });
   const file = delegationFile(home);
   const tmp = `${file}.${process.pid}.tmp`;
@@ -125,7 +141,12 @@ export interface DelegationChange {
   permission?: Permission | "default" | null;
   sddEnabled?: boolean;
   sddWorkspace?: string;
+  /** Replaces the collapsed board sections; unknown ids are ignored. */
+  collapsed?: string[];
 }
+
+/** A change that only touches the board layout. */
+export const layoutOnly = (change: DelegationChange): boolean => Object.keys(change).length > 0 && Object.keys(change).every((k) => k === "collapsed");
 
 export class DelegationError extends Error {}
 
@@ -143,6 +164,12 @@ export function applyChange(current: Delegation, change: DelegationChange, execu
     const dir = expandHome(change.sddWorkspace.trim());
     if (!dir || !path.isAbsolute(dir)) throw new DelegationError("The SDD workspace must be an absolute directory.");
     next.sdd.workspace = path.resolve(dir);
+  }
+  if (change.collapsed !== undefined) {
+    if (!Array.isArray(change.collapsed)) throw new DelegationError("collapsed must be a list of section ids.");
+    const collapsed = sectionIds(change.collapsed);
+    if (collapsed.length) next.board = { collapsed };
+    else delete next.board;
   }
   if (change.executor !== undefined && change.executor !== current.executor) {
     if (!executors[change.executor]) throw new DelegationError(`Unknown executor "${change.executor}". Available: ${Object.keys(executors).join(", ")}`);

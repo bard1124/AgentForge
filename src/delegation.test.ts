@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { type ApiContext, handleApi } from "./api.js";
 import { applyChange, defaultDelegation, delegationFile, type ExecutorFacts, heartbeatFile, promptContext, readDelegation, writeDelegation } from "./delegation.js";
 
 let home: string;
@@ -42,6 +43,21 @@ describe("reading settings", () => {
   it("drops an effort stored without a fixed model", () => {
     fs.writeFileSync(delegationFile(home), JSON.stringify({ enabled: true, executor: "cursor", effort: "high" }));
     expect(readDelegation(home).settings.effort).toBeUndefined();
+  });
+
+  it("reads collapsed board sections, dropping unknown ids, and treats a missing or malformed list as none", () => {
+    expect(readDelegation(home).settings).not.toHaveProperty("board");
+    fs.writeFileSync(delegationFile(home), JSON.stringify({ enabled: true, executor: "cursor", board: { collapsed: ["tasks", "dispatch", "nope", "savings", "tasks"] } }));
+    expect(readDelegation(home).settings.board).toEqual({ collapsed: ["savings", "tasks"] });
+    fs.writeFileSync(delegationFile(home), JSON.stringify({ enabled: true, executor: "cursor", board: { collapsed: "tasks" } }));
+    const read = readDelegation(home);
+    expect(read.corrupt).toBeUndefined();
+    expect(read.settings).not.toHaveProperty("board");
+  });
+
+  it("writes collapsed sections and reads them back", () => {
+    writeDelegation(home, { ...defaultDelegation(home), board: { collapsed: ["executor", "update"] } });
+    expect(readDelegation(home).settings.board).toEqual({ collapsed: ["executor", "update"] });
   });
 });
 
@@ -83,6 +99,33 @@ describe("applyChange", () => {
   it("requires an absolute SDD workspace", () => {
     expect(() => applyChange(base, { sddWorkspace: "relative/dir" }, facts)).toThrow(/absolute/);
     expect(applyChange(base, { sddWorkspace: "~/docs/sdd", sddEnabled: false }, facts).sdd).toEqual({ enabled: false, workspace: path.join(os.homedir(), "docs/sdd") });
+  });
+
+  it("replaces the collapsed sections, ignores unknown ids, and clears on an empty list", () => {
+    const s = applyChange(base, { collapsed: ["update", "dispatch", "sdd"] }, facts);
+    expect(s.board).toEqual({ collapsed: ["sdd", "update"] });
+    expect(applyChange(s, { collapsed: [] }, facts)).not.toHaveProperty("board");
+    expect(applyChange(s, { enabled: true }, facts).board).toEqual({ collapsed: ["sdd", "update"] });
+    expect(() => applyChange(base, { collapsed: "tasks" as never }, facts)).toThrow(/list of section ids/);
+  });
+});
+
+describe("board settings API", () => {
+  const forge = { workerNames: () => ["cursor"], permissionsOf: () => [], list: () => [] };
+  const call = (method: string, route: string, body?: unknown) =>
+    handleApi({ forge, config: { home, worker: "cursor" }, version: "test" } as unknown as ApiContext, method, new URL(`http://127.0.0.1${route}`), body);
+
+  it("saves collapsed sections without touching the hook stamp and returns them in /api/board", async () => {
+    writeDelegation(home, defaultDelegation(home));
+    const stamp = readDelegation(home).settings.updatedAt;
+    const res = await call("POST", "/api/settings", { collapsed: ["tasks", "bogus", "savings"] });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ settings: { board: { collapsed: ["savings", "tasks"] }, updatedAt: stamp } });
+    expect(((await call("GET", "/api/board")).body as { settings: unknown }).settings).toMatchObject({ board: { collapsed: ["savings", "tasks"] } });
+
+    expect((await call("POST", "/api/settings", { collapsed: 3 })).status).toBe(400);
+    const cleared = await call("POST", "/api/settings", { collapsed: [] });
+    expect((cleared.body as { settings: object }).settings).not.toHaveProperty("board");
   });
 });
 

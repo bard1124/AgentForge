@@ -1,5 +1,8 @@
 export type Permission = "sandbox" | "auto-review" | "sandbox+auto-review";
 
+/** Board sections that can be collapsed; Dispatch has no toggle. */
+export type SectionId = "savings" | "executor" | "sdd" | "tasks" | "update";
+
 export type Settings = {
   enabled: boolean;
   executor: string;
@@ -7,6 +10,7 @@ export type Settings = {
   effort?: string;
   permission?: Permission;
   sdd: { enabled: boolean; workspace: string };
+  board?: { collapsed: SectionId[] };
   updatedAt?: string;
 };
 

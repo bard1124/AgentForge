@@ -86,6 +86,8 @@ Then:
 
 How the board appears is the plugin's one option, under Settings → Plugins → AgentForge → **Board**: `button` (default) shows a one-line status with an **Open board** button above the prompt while the board is closed; `auto` opens it when a session starts; `command` opens it only with `/forge-board`. Dispatch settings live on the board.
 
+Every board section except Dispatch collapses with the ▾ / ▸ before its title and then shows a one-line summary; the choice is saved in `~/.agentforge/delegation.json` and applies to every session.
+
 ## First dispatch
 
 Try a small task whose result is easy to check. In a new Claude Code session with auto-dispatch on, send:

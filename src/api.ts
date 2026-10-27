@@ -8,6 +8,7 @@ import {
   DelegationError,
   type ExecutorFacts,
   heartbeatFile,
+  layoutOnly,
   readDelegation,
   writeDelegation,
 } from "./delegation.js";
@@ -150,7 +151,7 @@ route("POST", "/api/settings", async (ctx, body) => {
   const facts: Record<string, ExecutorFacts> = needsCatalog ? await executorFacts(ctx, change.executor ?? base.executor).catch(() => ({})) : {};
   for (const name of ctx.forge.workerNames()) facts[name] ??= { permissions: ctx.forge.permissionsOf(name) };
   try {
-    const saved = writeDelegation(home, applyChange(base, change, facts));
+    const saved = writeDelegation(home, applyChange(base, change, facts), layoutOnly(change));
     return { settings: saved, hook: hookHealth(home, saved) };
   } catch (err) {
     if (err instanceof DelegationError) throw new ApiError(400, err.message);

@@ -21,10 +21,10 @@ const ORDER_OF: Record<string, string> = { running: "executing", paused: "paused
 const taskRow = (id: string, title: string, status: string): Row => ({ id, title, status, orderStatus: ORDER_OF[status] ?? status, worker: "cursor", model: "composer-2.5", updatedAt: "" });
 
 /** An in-memory agentforge-backend answering the board's /api routes. */
-function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean; tasks?: Row[] } = {}) {
+function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean; tasks?: Row[]; collapsed?: string[]; settingsDown?: boolean } = {}) {
   const calls: Call[] = [];
   const tasks = opts.tasks ?? [taskRow("t-1", "Build login", "running")];
-  const settings: Record<string, unknown> = { enabled: false, executor: "cursor", sdd: { enabled: true, workspace: WS } };
+  const settings: Record<string, unknown> = { enabled: false, executor: "cursor", sdd: { enabled: true, workspace: WS }, ...(opts.collapsed ? { board: { collapsed: opts.collapsed } } : {}) };
   let doc = { id: T1, title: "Login page", path: `${WS}/${P1}/${T1}/task.md`, revision: "r1", content: "# Login page\n" };
   const runtime = {
     online: true,
@@ -93,7 +93,9 @@ function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean; task
         return json(200, { executors: { cursor: runtime } });
       case "POST /api/settings": {
         const c = body!;
+        if (opts.settingsDown) return json(409, { error: "Settings file is unreadable" });
         if (c.enabled !== undefined) settings.enabled = c.enabled;
+        if (c.collapsed !== undefined) settings.board = { collapsed: c.collapsed };
         if (c.model !== undefined) {
           if (c.model === null) delete settings.route;
           else settings.route = { model: c.model };
@@ -343,5 +345,80 @@ test("deleting a task or clearing finished ones asks to confirm first", async ($
   expect(b.tasks.map((t) => t.id)).toEqual(["a"]);
   expect(await ui.find({ type: "Text", text: /^Deleted 1 finished task\.$/ })).toBeDefined();
   expect(await ui.find({ key: "tasks-clear" })).toBeUndefined();
+  await ui.unmount();
+});
+
+const many = () => Array.from({ length: 12 }, (_, i) => taskRow(`t-${i + 1}`, `Task ${i + 1}`, i === 0 ? "running" : "finished"));
+
+test("every section but Dispatch collapses to its summary and saves the choice", async ($, on) => {
+  const b = backend(on, { tasks: many() });
+  await openBoard($);
+  const ui = await $.ui.mount({ ...PANE, surface: "desktop" });
+  const posted = () => b.calls.filter((c) => c.path === "/api/settings").map((c) => c.body?.collapsed);
+  expect(await ui.find({ key: "fold-dispatch" })).toBeUndefined();
+  expect(await ui.findAll({ type: "Button", text: /^[▾▸]$/ })).toHaveLength(5);
+
+  await ui.press({ key: "fold-savings" });
+  expect(await ui.find({ type: "Text", text: /^75% saved$/ })).toBeUndefined();
+  expect(await ui.find({ type: "Text", text: /^Today —$/ })).toBeDefined();
+
+  await ui.press({ key: "fold-executor" });
+  expect(await ui.find({ key: "model" })).toBeUndefined();
+  expect(await ui.find({ type: "Text", text: /^cursor · default model$/ })).toBeDefined();
+
+  await ui.press({ key: "sdd-open" });
+  expect(await ui.find({ type: "Text", text: /^On$/ })).toBeUndefined();
+  await ui.press({ key: "fold-sdd" });
+  expect(await ui.find({ key: "sdd-open" })).toBeUndefined();
+  expect(await ui.find({ key: `p-${P1}` })).toBeUndefined();
+  expect(await ui.find({ type: "Text", text: /^On$/ })).toBeDefined();
+
+  expect(await ui.find({ key: "tasks-down" })).toBeDefined();
+  await ui.press({ key: "fold-tasks" });
+  expect(await title(ui, "Task 1")).toBeUndefined();
+  for (const key of ["tasks-down", "tasks-clear"]) expect(await ui.find({ key })).toBeUndefined();
+  expect(await ui.find({ type: "Text", text: /^1 running$/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /^1–8 \/ 12$/ })).toBeDefined();
+
+  // Nothing known about updates yet: no summary.
+  await ui.press({ key: "fold-update" });
+  expect(await ui.find({ key: "upd-open" })).toBeUndefined();
+  expect(await ui.find({ type: "Text", text: /^Up to date$/ })).toBeUndefined();
+  await ui.press({ key: "fold-update" });
+  await ui.press({ key: "upd-open" });
+  await ui.press({ key: "fold-update" });
+  expect(await ui.find({ key: "upd-check" })).toBeUndefined();
+  expect(await ui.find({ type: "Text", text: /^Up to date$/ })).toBeDefined();
+
+  const all = ["savings", "executor", "sdd", "tasks", "update"];
+  expect(posted()).toEqual([1, 2, 3, 4, 5, 4, 5].map((n) => all.slice(0, n)));
+  expect(await ui.find({ key: "auto-on" })).toBeDefined();
+
+  await ui.press({ key: "fold-executor" });
+  expect(await ui.find({ key: "model" })).toBeDefined();
+  expect(b.settings.board).toEqual({ collapsed: ["savings", "sdd", "tasks", "update"] });
+  await ui.unmount();
+});
+
+test("sections saved as collapsed load collapsed", async ($, on) => {
+  backend(on, { collapsed: ["executor", "tasks"] });
+  await openBoard($);
+  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
+  expect((await ui.find({ key: "fold-executor" }))?.text).toBe("▸");
+  expect((await ui.find({ key: "fold-sdd" }))?.text).toBe("▾");
+  expect(await ui.find({ key: "model" })).toBeUndefined();
+  expect(await title(ui, "Build login")).toBeUndefined();
+  expect(await ui.find({ key: "sdd-open" })).toBeDefined();
+  await ui.unmount();
+});
+
+test("a refused collapse puts the section back and shows why", async ($, on) => {
+  backend(on, { settingsDown: true });
+  await openBoard($);
+  const ui = await $.ui.mount({ ...PANE, surface: "desktop" });
+  await ui.press({ key: "fold-executor" });
+  expect((await ui.find({ key: "fold-executor" }))?.text).toBe("▾");
+  expect(await ui.find({ key: "model" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /^Settings file is unreadable$/ })).toBeDefined();
   await ui.unmount();
 });

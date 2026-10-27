@@ -34,7 +34,7 @@ agentforge serve（轻量 stdio 转发）──── HTTP ────► agent
 | 任务 | 最近 100 个任务，每次显示 8 行，用 ▲ / ▼ 翻页，旁边显示位置（如 `9–16 / 40`）和运行中的数量。运行中的任务可 **Pause**（停止当前轮次但保留 agent，状态变为 `paused`）或 **Cancel**（结束任务）；暂停的任务可 **Resume**（在同一个 agent 上重发被停下的那一轮）或 **Cancel**；其余任务可 **Delete**（删除任务记录和事件日志）。**Clear finished** 删除所有既不在运行也未暂停的任务。删除都需要再点 Confirm 确认。移动端只显示文字。 |
 | Plugin update | 折叠区，见[更新与卸载](#更新与卸载)。 |
 
-开关从下一条消息生效：Hook 在每条消息前加一行 ON/OFF 说明，是否派工仍由 Claude Code 按任务判断。看板隐藏时暂停轮询；Claude Code 移动端只显示文字。
+开关从下一条消息生效：Hook 在每条消息前加一行 ON/OFF 说明，是否派工仍由 Claude Code 按任务判断。看板隐藏时暂停轮询；Claude Code 移动端只显示文字。除 Dispatch 外的各区可用 ▾ / ▸ 折叠为一行摘要；折叠列表存为 `delegation.json` 的 `board.collapsed`，所有会话共用，不算作会让 Hook 状态变为 Pending 的设置变更。
 
 不用看板时，设置保存在 `~/.agentforge/delegation.json`，通过后台修改：
 
