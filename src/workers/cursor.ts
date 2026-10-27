@@ -1,7 +1,23 @@
-import { Agent, type AgentOptions, Cursor, type Run, type SDKAgent } from "@cursor/sdk";
+import { Agent, type AgentOptions, Cursor, type Run, type RunError, type RunResult, type SDKAgent } from "@cursor/sdk";
 import type { ForgeConfig } from "../config.js";
 import type { ModelEntry, Permission } from "../delegation.js";
+import { isRetryableError } from "../errors.js";
 import type { ConversationInfo, SessionOptions, Worker, WorkerRun, WorkerRunResult, WorkerSession, WorkerUsage } from "./worker.js";
+
+/** `RunError` is typed as message and code only; the SDK's retry verdict is kept when the object carries one. */
+type FlaggedRunError = RunError & { isRetryable?: boolean; displayInfo?: { isRetryable?: boolean } };
+
+export function toWorkerResult(result: RunResult): WorkerRunResult {
+  const error = result.error as FlaggedRunError | undefined;
+  return {
+    status: result.status,
+    result: result.result,
+    error: error?.message,
+    retryable: error?.isRetryable ?? error?.displayInfo?.isRetryable,
+    durationMs: result.durationMs,
+    usage: result.usage,
+  };
+}
 
 class CursorRun implements WorkerRun {
   constructor(private readonly run: Run) {}
@@ -15,14 +31,11 @@ class CursorRun implements WorkerRun {
   }
 
   async wait(): Promise<WorkerRunResult> {
-    const result = await this.run.wait();
-    return {
-      status: result.status,
-      result: result.result,
-      error: result.error?.message,
-      durationMs: result.durationMs,
-      usage: result.usage,
-    };
+    try {
+      return toWorkerResult(await this.run.wait());
+    } catch (err) {
+      return { status: "error", error: (err as Error).message, retryable: isRetryableError(err) };
+    }
   }
 
   async cancel(): Promise<void> {

@@ -215,7 +215,7 @@ describe("Forge", () => {
         ? { messages: [], result: { status: "error", error: "[unknown] Failed to connect to API key exchange endpoint: fetch failed" } }
         : { messages: [], result: { status: "finished", result: "ok" } };
     });
-    const forge = makeForge(worker);
+    const forge = makeForge(worker, { autoRetry: 0 });
     const { task } = await forge.dispatch({ task: "do it", cwd: repo });
     await forge.wait(task.id, 5);
 
@@ -236,7 +236,7 @@ describe("Forge", () => {
 
   it("stops recommending retries after one failed retry", async () => {
     const worker = new FakeWorker(() => ({ messages: [], result: { status: "error", error: "fetch failed" } }));
-    const forge = makeForge(worker);
+    const forge = makeForge(worker, { autoRetry: 0 });
     const { task } = await forge.dispatch({ task: "do it", cwd: repo });
     await forge.wait(task.id, 5);
     expect(forge.status(task.id).lastError?.retryable).toBe(true);
@@ -245,6 +245,98 @@ describe("Forge", () => {
     const status = forge.status(task.id);
     expect(status.lastError?.retryable).toBe(false);
     expect(status.hint).toMatch(/Stop retrying/);
+  });
+
+  const DROPPED = "Agent turn stopped after repeated resume attempts made no progress";
+
+  it("continues a transient failure once on the same agent, without reporting it in between", async () => {
+    let attempts = 0;
+    const worker = new FakeWorker(() => {
+      attempts += 1;
+      return attempts === 1 ? { messages: [], result: { status: "error", error: DROPPED } } : { messages: [], result: { status: "finished", result: "ok" } };
+    });
+    const forge = makeForge(worker);
+    const { task } = await forge.dispatch({ task: "do it", cwd: repo });
+    expect(await forge.wait(task.id, 5)).toBe(true);
+
+    const t = forge.get(task.id);
+    expect(t.status).toBe("finished");
+    expect(t.turns.map((u) => [u.status, !!u.autoRetry])).toEqual([["error", false], ["finished", true]]);
+    expect(t.turns[0]?.retryable).toBe(true);
+    expect(worker.prompts[1]).toMatch(/cut off by a connection error/);
+    expect(worker.resumed).toEqual(["agent-1"]);
+    expect(forge.status(task.id).steps.map((s) => s.text)).toContain("Transient connection error; continuing automatically on the same agent (once).");
+  });
+
+  it("stops after a failed automatic retry and tells the supervisor the connection keeps dropping", async () => {
+    const worker = new FakeWorker(() => ({ messages: [], result: { status: "error", error: DROPPED } }));
+    const forge = makeForge(worker);
+    const { task } = await forge.dispatch({ task: "do it", cwd: repo });
+    await forge.wait(task.id, 5);
+
+    expect(worker.prompts).toHaveLength(2);
+    const status = forge.status(task.id);
+    expect(status.status).toBe("error");
+    expect(status.lastError).toEqual({ message: DROPPED, retryable: false });
+    expect(status.hint).toMatch(/connection keeps dropping.*splitting the task/);
+
+    await forge.retry(task.id);
+    await forge.wait(task.id, 5);
+    expect(worker.prompts[2]).toBe(worker.prompts[0]);
+  });
+
+  it("trusts the worker's verdict over the message", async () => {
+    const worker = new FakeWorker(() => ({ messages: [], result: { status: "error", error: "something odd", retryable: true } }));
+    const forge = makeForge(worker, { autoRetry: 0 });
+    const { task } = await forge.dispatch({ task: "do it", cwd: repo });
+    await forge.wait(task.id, 5);
+    expect(forge.status(task.id).lastError).toEqual({ message: "something odd", retryable: true });
+    expect(forge.status(task.id).hint).toMatch(/progress so far kept; do not re-dispatch/);
+  });
+
+  it("flags tool calls replayed after a reconnect", async () => {
+    const worker = new FakeWorker((cwd) => {
+      fs.appendFileSync(path.join(cwd, "a.txt"), "dup\n");
+      return {
+        messages: [tool("c1", "running", { path: "a.txt" }), tool("c1", "completed", { path: "a.txt" }), tool("c1", "completed", { path: "a.txt" })],
+        result: { status: "finished", result: "ok" },
+      };
+    });
+    const forge = makeForge(worker);
+    const { task } = await forge.dispatch({ task: "do it", cwd: repo });
+    await forge.wait(task.id, 5);
+
+    expect(forge.status(task.id).steps.map((s) => s.text)).toContain("Replayed after a reconnect: edit a.txt. It may have applied twice: check that file for duplicated code.");
+    const result = await forge.result(task.id);
+    expect(result.replayed).toEqual([{ at: expect.any(String), tool: "edit", target: "a.txt" }]);
+    expect(forge.get(task.id).touched).toEqual(["a.txt"]);
+  });
+
+  it("keeps another task's edits in the same directory out of the diff", async () => {
+    const worker = new FakeWorker((cwd, prompt) => {
+      const file = prompt.includes("task A") ? "a.txt" : "b.txt";
+      fs.writeFileSync(path.join(cwd, file), `${file} changed\n`);
+      return { messages: [tool("c1", "completed", { path: path.join(cwd, file) })], result: { status: "finished", result: "ok" } };
+    });
+    const forge = makeForge(worker);
+    const a = (await forge.dispatch({ task: "task A", cwd: repo })).task;
+    await forge.wait(a.id, 5);
+    const b = (await forge.dispatch({ task: "task B", cwd: repo })).task;
+    await forge.wait(b.id, 5);
+
+    const result = await forge.result(a.id, { includeDiff: true });
+    expect(result.changes.files).toEqual(expect.arrayContaining([{ status: "??", path: "b.txt", preExisting: false, byOtherTask: b.id }]));
+    expect(result.diff).toContain("a.txt changed");
+    expect(result.diff).not.toContain("b.txt changed");
+  });
+
+  it("does not continue automatically when the turn budget is used", async () => {
+    const worker = new FakeWorker(() => ({ messages: [], result: { status: "error", error: DROPPED } }));
+    const forge = makeForge(worker);
+    const { task } = await forge.dispatch({ task: "do it", cwd: repo, maxTurns: 1 });
+    await forge.wait(task.id, 5);
+    expect(worker.prompts).toHaveLength(1);
+    expect(forge.get(task.id).status).toBe("error");
   });
 
   it("times out a worker that never starts and lets retry reuse the in-flight agent", async () => {

@@ -77,6 +77,10 @@ status、wait、result 和 cancel 都接受 `task_id` 或 `order_id`。在 Claud
 
 来自 Cursor 的错误带 `error_type` 和 `retryable` 判断：工具错误写在错误文本里，失败的轮次写在 `lastError` 中。判断综合了 SDK 的 `isRetryable`、错误类别（网络或限流）和连接失败信息，因为 SDK 对普通断线也常报 `isRetryable: false`。worker 在 `AGENTFORGE_START_TIMEOUT_SEC` 内没有开始运行也按此处理；对该任务 `forge_retry` 会继续等待同一个 agent，不会另开一个。
 
+某一轮因可重试的连接错误失败时（例如 `Agent turn stopped after repeated resume attempts made no progress`，这是 SDK 在与 Cursor 的连接反复断开时抛出的），AgentForge 会在同一个 agent 上自动续跑一次，并要求它从中断处接着做；期间任务保持 `running`。如果续跑也失败，`forge_status` 会提示连接反复中断，并建议把任务拆小。设置 `AGENTFORGE_AUTO_RETRY=0` 可关闭。
+
+SDK 断线恢复时可能把最后几个工具调用再执行一遍。AgentForge 发现同一调用完成两次时会记一条步骤，并在 `forge_result` 的 `replayed` 中列出：被重放的编辑可能写入了两次。`forge_result` 还会标出同一目录下其他任务编辑过的文件（`byOtherTask`），diff 默认不包含它们。
+
 ## 任务状态
 
 `forge_dispatch` 接收 `order_id`：每项工作一个新 UUID。用相同 `order_id` 和参数重试会返回已有任务（`reused: true`），不会启动第二个 agent；相同 id 但参数不同会被拒绝。
@@ -120,6 +124,7 @@ worker 可以从 `~/.agentforge/mcp.json`（或 `AGENTFORGE_MCP_CONFIG`）列出
 | `AGENTFORGE_VERIFY_TIMEOUT_SEC` | `900` | 验证命令超时 |
 | `AGENTFORGE_STALL_WARN_SEC` | `120` | worker 静默多久后 `forge_status` 提示可能卡住 |
 | `AGENTFORGE_START_TIMEOUT_SEC` | `300` | 创建 agent 和每次开始运行的时限 |
+| `AGENTFORGE_AUTO_RETRY` | `1` | 因连接错误失败的轮次自动续跑一次；`0` 关闭 |
 | `AGENTFORGE_MCP_CONFIG` | `~/.agentforge/mcp.json` | worker 可用的 MCP 服务器（绝对路径） |
 | `AGENTFORGE_WORKERS` | - | Worker 插件模块，逗号分隔 |
 | `AGENTFORGE_ENV_FILE` | `~/.agentforge/.env` | 设置时文件必须存在 |

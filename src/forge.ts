@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { ForgeConfig } from "./config.js";
-import type { ModelParameterValue, TokenUsage } from "@cursor/sdk";
+import type { ModelParameterValue, SDKMessage, TokenUsage } from "@cursor/sdk";
 import { type Delegation, type ModelEntry, type Permission, readDelegation } from "./delegation.js";
 import { isRetryableError, isTransientMessage } from "./errors.js";
 import { StepRecorder, truncate } from "./events.js";
@@ -73,8 +73,22 @@ interface LiveTask {
   done?: Promise<void>;
   /** Set by pause(): the cancelled turn ends as paused and queued follow-ups wait for resume. */
   pausing?: boolean;
+  /** Set by cancel() and shutdown(): the ending turn is not continued automatically. */
+  cancelling?: boolean;
   waiters: Set<() => void>;
 }
+
+/** Worker tools that write the file named by `args.path`. */
+const EDIT_TOOLS = new Set(["edit", "write", "delete"]);
+
+/** `file` relative to `cwd` with forward slashes, as git prints it; absolute when outside `cwd`. */
+function relativeTo(cwd: string, file: string): string {
+  const rel = path.relative(cwd, path.resolve(cwd, file));
+  return rel.startsWith("..") || path.isAbsolute(rel) ? path.resolve(cwd, file) : rel.split(path.sep).join("/");
+}
+
+const AUTO_RETRY_PROMPT =
+  "Your previous turn was cut off by a connection error. Continue from where you stopped: check what is already done (files, git diff) and do not redo finished work. The original task is unchanged.";
 
 export interface DispatchInput {
   orderId?: string;
@@ -145,6 +159,8 @@ export interface ResultView {
   lastError?: string;
   changes: ChangeSummary;
   diff?: string;
+  /** Tool calls replayed after a reconnect; check edited files for duplicated code. */
+  replayed?: Task["replayed"];
   verifications: Verification[];
   reworkCount: number;
   budget: BudgetView;
@@ -409,8 +425,8 @@ export class Forge {
     const idleSec = this.idleSec(task);
     const failed = task.status === "error" ? turn?.error : undefined;
     const previous = task.turns.at(-2);
-    const alreadyRetried = !!turn && previous?.status === "error" && previous.prompt === turn.prompt;
-    const retryable = failed !== undefined && isTransientMessage(failed) && !alreadyRetried;
+    const alreadyRetried = !!turn && (!!turn.autoRetry || (previous?.status === "error" && (!!previous.autoRetry || previous.prompt === turn.prompt)));
+    const retryable = failed !== undefined && (turn?.retryable ?? isTransientMessage(failed)) && !alreadyRetried;
     const lastError = failed !== undefined ? { message: failed, retryable } : undefined;
     return {
       id: task.id,
@@ -485,7 +501,10 @@ export class Forge {
     return "started";
   }
 
-  /** Re-sends the prompt of the last failed or interrupted turn on the same agent; a paused task is resumed. */
+  /**
+   * Re-sends the prompt of the last failed or interrupted turn on the same agent; after an automatic
+   * retry, the instruction it continued. A paused task is resumed.
+   */
   async retry(id: string): Promise<Turn> {
     if (this.get(id).status === "paused") return this.resume(id);
     const live = await this.claim(id);
@@ -497,7 +516,8 @@ export class Forge {
     // A session that just failed may hold broken connection state; start from a fresh resume.
     await live.session?.close().catch(() => undefined);
     live.session = undefined;
-    await this.startTurn(live, last.prompt);
+    const prompt = last.autoRetry ? ([...task.turns].reverse().find((t) => !t.autoRetry)?.prompt ?? last.prompt) : last.prompt;
+    await this.startTurn(live, prompt);
     return task.turns.at(-1)!;
   }
 
@@ -538,6 +558,7 @@ export class Forge {
     if (task.status !== "running") throw new ForgeError(`Task ${id} is not running (status: ${task.status}).`);
     if (!live?.run) throw new ForgeError(`Task ${id} is owned by another AgentForge process (pid ${task.ownerPid}).`);
     task.pending = [];
+    live.cancelling = true;
     await live.run.cancel();
     await live.done;
     return task;
@@ -570,9 +591,14 @@ export class Forge {
     const changes = await summarizeChanges(task.cwd, task.baseline).catch(
       (err): ChangeSummary => ({ isRepo: false, commits: [], diffStat: `git error: ${(err as Error).message}`, files: [] }),
     );
+    const others = this.otherEditors(task);
+    for (const f of changes.files) {
+      const other = task.touched?.includes(f.path) ? undefined : others.get(f.path);
+      if (other) f.byOtherTask = other;
+    }
     let diff: string | undefined;
     if (opts.includeDiff && changes.isRepo) {
-      const paths = opts.paths?.length ? opts.paths : changes.files.filter((f) => !f.preExisting).map((f) => f.path);
+      const paths = opts.paths?.length ? opts.paths : changes.files.filter((f) => !f.preExisting && !f.byOtherTask).map((f) => f.path);
       diff = paths.length ? await diffFor(task.cwd, task.baseline, paths, opts.maxDiffChars ?? 40_000) : "";
     }
     return {
@@ -586,12 +612,23 @@ export class Forge {
       lastError,
       changes,
       diff,
+      ...(task.replayed?.length ? { replayed: task.replayed } : {}),
       verifications: task.verifications,
       reworkCount: task.reworkCount,
       budget: this.budgetOf(task),
       usage: await this.usageOf(task),
       eventLog: this.store.eventFile(task.id),
     };
+  }
+
+  /** Files that other tasks in the same directory wrote since this one started, mapped to the task id. */
+  private otherEditors(task: Task): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const t of this.list()) {
+      if (t.id === task.id || t.cwd !== task.cwd || t.updatedAt < task.createdAt) continue;
+      for (const f of t.touched ?? []) if (!out.has(f)) out.set(f, t.id);
+    }
+    return out;
   }
 
   /** Prefers the worker backend's billed totals; falls back to per-turn token counts. */
@@ -646,6 +683,7 @@ export class Forge {
 
   async shutdown(): Promise<void> {
     for (const live of this.live.values()) {
+      live.cancelling = true;
       if (live.run) await live.run.cancel().catch(() => undefined);
       await this.release(live);
     }
@@ -686,7 +724,7 @@ export class Forge {
     return live.session;
   }
 
-  private async startTurn(live: LiveTask, prompt: string): Promise<void> {
+  private async startTurn(live: LiveTask, prompt: string, autoRetry = false): Promise<void> {
     const { task } = live;
     const budget = this.budgetOf(task);
     if (budget.exhausted) {
@@ -695,7 +733,7 @@ export class Forge {
           "Ask the user before continuing; dispatch a new task with a narrower scope or higher max_turns / max_minutes.",
       );
     }
-    const turn: Turn = { index: task.turns.length + 1, prompt, status: "running", startedAt: now() };
+    const turn: Turn = { index: task.turns.length + 1, prompt, status: "running", startedAt: now(), ...(autoRetry ? { autoRetry } : {}) };
     task.turns.push(turn);
     task.status = "running";
     task.lastEventAt = now();
@@ -735,11 +773,13 @@ export class Forge {
       overBudget = true;
       void run.cancel().catch(() => undefined);
     }, Math.max(0, task.maxTaskMs - task.activeMs));
+    const completed = new Set<string>();
     try {
       for await (const message of run.messages()) {
         this.store.appendEvent(task.id, message);
         task.lastEventAt = now();
         recorder.record(message);
+        this.noteToolCall(task, message, completed);
         if (Date.now() - lastSave > 1000) {
           lastSave = Date.now();
           this.persist(task);
@@ -749,26 +789,46 @@ export class Forge {
       turn.status = res.status;
       turn.result = res.result;
       turn.error = res.error;
+      if (res.status === "error") turn.retryable = res.retryable ?? isTransientMessage(res.error);
       turn.durationMs = res.durationMs;
       turn.usage = res.usage;
     } catch (err) {
       turn.status = "error";
       turn.error = (err as Error).message;
+      turn.retryable = isRetryableError(err);
     }
     clearTimeout(budgetTimer);
     turn.endedAt = now();
     task.activeMs += Date.parse(turn.endedAt) - Date.parse(turn.startedAt);
+    const stopping = !!live.pausing || !!live.cancelling;
     if (live.pausing && turn.status === "cancelled") turn.status = "paused";
     live.pausing = false;
+    live.cancelling = false;
     if (overBudget) {
       turn.status = "error";
       turn.error = `Stopped: task time budget of ${Math.round(task.maxTaskMs / 60_000)} min used up. Ask the user before continuing.`;
+      delete turn.retryable;
       task.pending = [];
     }
     live.run = undefined;
-    task.status = turn.status;
+    const autoRetry = turn.status === "error" && !!turn.retryable && !turn.autoRetry && !stopping && this.config.autoRetry > 0 && !this.budgetOf(task).exhausted;
+    // Stays running across an automatic retry, so a poll in between never reports the failure.
+    task.status = autoRetry ? "running" : turn.status;
     if (turn.error) this.addStep(task, { kind: "error", text: truncate(turn.error, 300) });
     this.persist(task);
+
+    if (autoRetry) {
+      this.addStep(task, { kind: "status", text: "Transient connection error; continuing automatically on the same agent (once)." });
+      await live.session?.close().catch(() => undefined);
+      live.session = undefined;
+      try {
+        await this.startTurn(live, AUTO_RETRY_PROMPT, true);
+        return;
+      } catch (err) {
+        this.addStep(task, { kind: "error", text: `Automatic retry failed to start: ${(err as Error).message}` });
+        this.persist(task);
+      }
+    }
 
     const next = turn.status === "paused" ? undefined : task.pending.shift();
     if (next !== undefined && turn.status !== "cancelled") {
@@ -781,6 +841,26 @@ export class Forge {
       }
     }
     for (const notify of [...live.waiters]) notify();
+  }
+
+  /** Records files the edit tools wrote, and calls that completed twice in one run (replayed after a reconnect). */
+  private noteToolCall(task: Task, message: SDKMessage, completed: Set<string>): void {
+    if (message.type !== "tool_call" || message.status !== "completed") return;
+    const args = (message.args ?? {}) as { path?: unknown; command?: unknown };
+    const file = typeof args.path === "string" ? relativeTo(task.cwd, args.path) : undefined;
+    if (file && EDIT_TOOLS.has(message.name)) {
+      task.touched ??= [];
+      if (!task.touched.includes(file)) task.touched.push(file);
+    }
+    if (!completed.has(message.call_id)) {
+      completed.add(message.call_id);
+      return;
+    }
+    const target = file ?? (typeof args.command === "string" ? truncate(args.command, 200) : "");
+    task.replayed ??= [];
+    task.replayed.push({ at: now(), tool: message.name, target });
+    const check = EDIT_TOOLS.has(message.name) ? " It may have applied twice: check that file for duplicated code." : "";
+    this.addStep(task, { kind: "error", text: `Replayed after a reconnect: ${message.name} ${target}.${check}` });
   }
 
   private async release(live: LiveTask): Promise<void> {
@@ -800,6 +880,10 @@ export class Forge {
 
   private statusHint(task: Task, idleSec: number | undefined, retryable: boolean | undefined, alreadyRetried: boolean): string {
     if (alreadyRetried && task.status === "error") {
+      const turn = task.turns.at(-1);
+      if (turn?.retryable ?? isTransientMessage(turn?.error)) {
+        return "The connection keeps dropping: this turn failed again after a retry, often because a proxy/VPN cuts long connections or one turn runs very long. Stop retrying and tell the user; suggest splitting the task into smaller dispatches rather than re-dispatching the same brief.";
+      }
       return "This turn already failed and was retried once. Stop retrying and report lastError to the user.";
     }
     const exhausted = this.budgetOf(task).exhausted;
@@ -886,7 +970,7 @@ export class Forge {
         return "Turn finished. Review with forge_result, then forge_accept (optionally with verify_command) or forge_followup to request changes.";
       case "error":
         return retryable
-          ? "Last turn failed with a transient connection error. forge_retry re-sends it on the same agent; retry once, then report to the user if it fails again."
+          ? "Last turn failed with a transient connection error. forge_retry continues on the same agent with the progress so far kept; do not re-dispatch. Retry once, then report to the user if it fails again."
           : "Last turn failed. Read lastError; fix the cause or give guidance via forge_followup. Do not blindly retry.";
       case "cancelled":
         return "Cancelled. forge_followup resumes the same agent with a new instruction.";

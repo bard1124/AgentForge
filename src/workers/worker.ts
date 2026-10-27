@@ -6,6 +6,8 @@ export interface WorkerRunResult {
   status: "finished" | "error" | "cancelled";
   result?: string;
   error?: string;
+  /** Whether retrying can continue the work; absent when the worker gives no verdict. */
+  retryable?: boolean;
   durationMs?: number;
   usage?: TokenUsage;
 }

@@ -87,6 +87,8 @@ export interface ForgeConfig {
   verifyTimeoutMs: number;
   stallWarnSec: number;
   startTimeoutMs: number;
+  /** Automatic continuations after a transient turn failure; 0 or 1. */
+  autoRetry: number;
   mcpConfigPath: string;
   workerModules: string[];
 }
@@ -108,6 +110,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ForgeConfig {
     verifyTimeoutMs: intEnv(env, "VERIFY_TIMEOUT_SEC", 900) * 1000,
     stallWarnSec: intEnv(env, "STALL_WARN_SEC", 120),
     startTimeoutMs: intEnv(env, "START_TIMEOUT_SEC", 300) * 1000,
+    autoRetry: Math.min(intEnv(env, "AUTO_RETRY", 1), 1),
     mcpConfigPath: envVar(env, "MCP_CONFIG") ?? path.join(home, "mcp.json"),
     workerModules: list(envVar(env, "WORKERS")),
   };

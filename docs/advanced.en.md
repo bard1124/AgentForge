@@ -77,6 +77,10 @@ Status, wait, result, and cancel take `task_id` or `order_id`. In Claude Code th
 
 Errors from Cursor carry `error_type` and a `retryable` verdict: tool errors in the error text, failed turns in `lastError`. The verdict combines the SDK's `isRetryable` flag, the error class (network or rate limit), and connection-failure messages, because the SDK often reports `isRetryable: false` on plain connection drops. A worker that has not started its run within `AGENTFORGE_START_TIMEOUT_SEC` fails the same way; `forge_retry` keeps waiting on the same agent instead of opening a second one.
 
+A turn that fails with a retryable connection error (for example `Agent turn stopped after repeated resume attempts made no progress`, which the SDK raises when the stream to Cursor keeps dropping) is continued once automatically on the same agent, with an instruction to pick up where it stopped; the task stays `running` meanwhile. If that fails too, `forge_status` says the connection keeps dropping and suggests smaller tasks. `AGENTFORGE_AUTO_RETRY=0` turns this off.
+
+When the SDK resumes after a reconnect it can run the last tool calls again. AgentForge spots a call that completes twice, adds a step, and lists it under `replayed` in `forge_result`: a replayed edit may have applied twice. `forge_result` also marks files another task in the same directory edited (`byOtherTask`) and leaves them out of the diff.
+
 ## Task states
 
 `forge_dispatch` takes an `order_id`: a fresh UUID per piece of work. Retrying with the same `order_id` and arguments returns the existing task (`reused: true`) instead of starting a second agent; the same id with different arguments is refused.
@@ -120,6 +124,7 @@ Settings come from the environment first, then from `AGENTFORGE_ENV_FILE` or `~/
 | `AGENTFORGE_VERIFY_TIMEOUT_SEC` | `900` | Timeout of the verification command |
 | `AGENTFORGE_STALL_WARN_SEC` | `120` | Silence after which `forge_status` hints that the worker may be stalled |
 | `AGENTFORGE_START_TIMEOUT_SEC` | `300` | Limit for creating the agent and for starting each run |
+| `AGENTFORGE_AUTO_RETRY` | `1` | Continue a turn that failed with a connection error once automatically; `0` turns it off |
 | `AGENTFORGE_MCP_CONFIG` | `~/.agentforge/mcp.json` | MCP servers workers may use (absolute path) |
 | `AGENTFORGE_WORKERS` | - | Worker plugin modules, comma separated |
 | `AGENTFORGE_ENV_FILE` | `~/.agentforge/.env` | Must exist when set |

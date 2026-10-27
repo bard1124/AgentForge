@@ -1,6 +1,6 @@
 import { AuthenticationError, CursorSdkError, NetworkError, RateLimitError } from "@cursor/sdk";
 
-const TRANSIENT_MESSAGE = /fetch failed|network request failed|failed to connect|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|\b50[234]\b|timed? ?out|rate limit/i;
+const TRANSIENT_MESSAGE = /fetch failed|network request failed|failed to connect|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|\b50[234]\b|timed? ?out|rate limit|resume attempts made no progress|connection (was interrupted|failed|stalled)/i;
 
 export function isTransientMessage(message: string | undefined): boolean {
   return !!message && TRANSIENT_MESSAGE.test(message);

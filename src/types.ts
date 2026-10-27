@@ -40,6 +40,10 @@ export interface Turn {
   endedAt?: string;
   result?: string;
   error?: string;
+  /** The worker's verdict on `error`; absent on records written before it was kept. */
+  retryable?: boolean;
+  /** Started by Forge to continue after a transient failure, with a continuation prompt. */
+  autoRetry?: boolean;
   durationMs?: number;
   usage?: TokenUsage;
 }
@@ -99,6 +103,10 @@ export interface Task {
   maxTaskMs: number;
   /** Worker running time summed over finished turns. */
   activeMs: number;
+  /** Repo-relative (or absolute, outside cwd) paths the worker's edit tools wrote. */
+  touched?: string[];
+  /** Tool calls the worker ran again after a reconnect; a replayed edit may have applied twice. */
+  replayed?: { at: string; tool: string; target: string }[];
 }
 
 export interface ChangeSummary {
@@ -107,5 +115,5 @@ export interface ChangeSummary {
   currentHead?: string;
   commits: string[];
   diffStat: string;
-  files: { status: string; path: string; preExisting: boolean }[];
+  files: { status: string; path: string; preExisting: boolean; byOtherTask?: string }[];
 }

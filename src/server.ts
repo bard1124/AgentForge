@@ -218,8 +218,10 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
     {
       title: "Get task output",
       description:
-        "Worker's final report plus git changes since dispatch (commits, diff stat, files; preExisting marks files dirty before dispatch), " +
-        "budget used, and token usage with billed cost when available. include_diff adds the patch.",
+        "Worker's final report plus git changes since dispatch (commits, diff stat, files; preExisting marks files dirty before dispatch, " +
+        "byOtherTask names the task that edited a file when several share the cwd), budget used, and token usage with billed cost when available. " +
+        "include_diff adds the patch, leaving out preExisting and byOtherTask files unless paths names them. " +
+        "replayed lists tool calls the worker ran twice after a reconnect: check those files for duplicated edits.",
       inputSchema: {
         ...lookup,
         include_diff: z.boolean().optional(),
