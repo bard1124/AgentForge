@@ -193,14 +193,14 @@ async function taskCall<T>(id: string, fn: () => Promise<T>): Promise<T> {
 const taskState = (t: Task) => ({ id: t.id, status: t.status, orderStatus: orderStatus(t) });
 
 route("POST", "/api/tasks/clear", async (ctx) => ({ deleted: await ctx.forge.clearFinished() }));
-route("POST", "/api/tasks/:id/pause", (ctx, _b, _u, { id }) => taskCall(id!, async () => taskState(await ctx.forge.pause(id!))));
+route("POST", "/api/tasks/:id/pause", (ctx, _b, _u, { id }) => taskCall(id!, async () => taskState(await ctx.forge.pause(id!, "board"))));
 route("POST", "/api/tasks/:id/resume", (ctx, _b, _u, { id }) =>
   taskCall(id!, async () => {
     await ctx.forge.resume(id!);
     return taskState(ctx.forge.get(id!));
   }),
 );
-route("POST", "/api/tasks/:id/cancel", (ctx, _b, _u, { id }) => taskCall(id!, async () => taskState(await ctx.forge.cancel(id!))));
+route("POST", "/api/tasks/:id/cancel", (ctx, _b, _u, { id }) => taskCall(id!, async () => taskState(await ctx.forge.cancel(id!, "board"))));
 route("DELETE", "/api/tasks/:id", (ctx, _b, _u, { id }) =>
   taskCall(id!, async () => {
     await ctx.forge.delete(id!);

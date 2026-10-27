@@ -41,6 +41,12 @@ function list(raw: string | undefined): string[] {
   return (raw ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+function openProgress(raw: string | undefined): string | undefined {
+  if (raw === undefined) return "cursor";
+  const v = raw.trim();
+  return !v || ["0", "off", "false", "no"].includes(v.toLowerCase()) ? undefined : v;
+}
+
 function setting(env: NodeJS.ProcessEnv, name: string): string | undefined {
   return envVar(env, name)?.trim() || undefined;
 }
@@ -89,6 +95,10 @@ export interface ForgeConfig {
   startTimeoutMs: number;
   /** Automatic continuations after a transient turn failure; 0 or 1. */
   autoRetry: number;
+  /** Editor command that opens a new task's progress page; undefined disables. */
+  openProgress?: string;
+  /** Port of the read-only monitor page the backend serves; 0 disables. */
+  monitorPort: number;
   mcpConfigPath: string;
   workerModules: string[];
 }
@@ -111,6 +121,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ForgeConfig {
     stallWarnSec: intEnv(env, "STALL_WARN_SEC", 120),
     startTimeoutMs: intEnv(env, "START_TIMEOUT_SEC", 300) * 1000,
     autoRetry: Math.min(intEnv(env, "AUTO_RETRY", 1), 1),
+    openProgress: openProgress(envVar(env, "OPEN_PROGRESS")),
+    monitorPort: intEnv(env, "MONITOR_PORT", 18862),
     mcpConfigPath: envVar(env, "MCP_CONFIG") ?? path.join(home, "mcp.json"),
     workerModules: list(envVar(env, "WORKERS")),
   };

@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { progressFile, writeProgress } from "./progress.js";
 import type { Task } from "./types.js";
 
 /** File-backed task store: one JSON document per task plus a raw event log. */
 export class TaskStore {
   private readonly dir: string;
 
-  constructor(home: string) {
+  constructor(private readonly home: string) {
     this.dir = path.join(home, "tasks");
     fs.mkdirSync(this.dir, { recursive: true });
   }
@@ -22,6 +23,15 @@ export class TaskStore {
     const tmp = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(task, null, 2));
     fs.renameSync(tmp, file);
+    try {
+      writeProgress(this.home, task);
+    } catch {
+      // The progress page is a view; a failed write must not fail the save.
+    }
+  }
+
+  progressFile(id: string): string {
+    return progressFile(this.home, id);
   }
 
   get(id: string): Task | undefined {
@@ -45,6 +55,7 @@ export class TaskStore {
   delete(id: string): void {
     fs.rmSync(this.taskFile(id), { force: true });
     fs.rmSync(this.eventFile(id), { force: true });
+    fs.rmSync(this.progressFile(id), { force: true });
   }
 
   appendEvent(id: string, event: unknown): void {

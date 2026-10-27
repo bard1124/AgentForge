@@ -8,6 +8,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { type ApiContext, handleApi } from "./api.js";
 import type { ForgeConfig } from "./config.js";
 import { Forge } from "./forge.js";
+import { openInEditor } from "./progress.js";
 import { createServer } from "./server.js";
 import { TaskStore } from "./store.js";
 import { Updater } from "./updater.js";
@@ -195,6 +196,12 @@ export async function runBackend(config: ForgeConfig): Promise<void> {
   const version = packageVersion();
   const store = new TaskStore(home);
   const forge = new Forge(config, store, await loadWorkers(config));
+  const editor = config.openProgress;
+  if (editor) {
+    forge.onDispatched = (task) => {
+      if (!openInEditor(editor, store.progressFile(task.id))) console.error(`${new Date().toISOString()} progress page for ${task.id} not opened: editor "${editor}" not found`);
+    };
+  }
   const sessions = new Map<string, StreamableHTTPServerTransport>();
   const startedAt = new Date().toISOString();
   const cli = path.join(packageRoot(), "dist", "cli.js");
@@ -276,9 +283,20 @@ export async function runBackend(config: ForgeConfig): Promise<void> {
   const info: BackendInfo = { pid: process.pid, port, version, startedAt };
   fs.writeFileSync(files(home).info, `${JSON.stringify(info, null, 2)}\n`);
   console.error(`${new Date().toISOString()} ${BACKEND_TITLE} ${version} pid ${process.pid} listening on 127.0.0.1:${port}`);
+  let monitor: { url: string; close: () => Promise<void> } | undefined;
+  if (config.monitorPort > 0) {
+    try {
+      const { monitorWeb } = await import("./monitor.js");
+      monitor = await monitorWeb(home, { port: config.monitorPort });
+      console.error(`${new Date().toISOString()} monitor page on ${monitor.url}`);
+    } catch (err) {
+      console.error(`${new Date().toISOString()} monitor page not started on port ${config.monitorPort}: ${(err as Error).message}`);
+    }
+  }
 
   shutdown = async () => {
     server.close();
+    await monitor?.close().catch(() => undefined);
     for (const transport of sessions.values()) await transport.close().catch(() => undefined);
     await forge.shutdown();
     if (readJson<BackendInfo>(files(home).info)?.pid === process.pid) fs.rmSync(files(home).info, { force: true });

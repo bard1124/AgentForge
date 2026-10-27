@@ -135,6 +135,8 @@ Settings come from the environment first, then from `AGENTFORGE_ENV_FILE` or `~/
 | `AGENTFORGE_STALL_WARN_SEC` | `120` | Silence after which `forge_status` hints that the worker may be stalled |
 | `AGENTFORGE_START_TIMEOUT_SEC` | `300` | Limit for creating the agent and for starting each run |
 | `AGENTFORGE_AUTO_RETRY` | `1` | Continue a turn that failed with a connection error once automatically; `0` turns it off |
+| `AGENTFORGE_OPEN_PROGRESS` | `cursor` | Editor command that opens a task's progress page when it starts; `off` turns it off |
+| `AGENTFORGE_MONITOR_PORT` | `18862` | Port of the read-only monitor page the backend serves; `0` turns it off |
 | `AGENTFORGE_MCP_CONFIG` | `~/.agentforge/mcp.json` | MCP servers workers may use (absolute path) |
 | `AGENTFORGE_WORKERS` | - | Worker plugin modules, comma separated |
 | `AGENTFORGE_ENV_FILE` | `~/.agentforge/.env` | Must exist when set |
@@ -158,7 +160,13 @@ agentforge monitor --once          # one snapshot (also what a non-TTY gets); --
 agentforge monitor --web           # read-only page on http://127.0.0.1:18862 (--port to change)
 ```
 
-The monitor reads the task files and settings as they are: it never starts the backend, creates the data folder, or changes a task. Active tasks are marked `*` when no backend answers, since their real state is unknown until one does. The web page accepts only local GET requests.
+The monitor reads the task files and settings as they are: it never starts the backend, creates the data folder, or changes a task. Active tasks are marked `*` when no backend answers, since their real state is unknown until one does. The web page accepts only local GET requests. While it runs, the backend serves the same page on `http://127.0.0.1:18862` itself (`AGENTFORGE_MONITOR_PORT` to change, `0` to turn off; a busy port is only logged), so it can stay open in Cursor's built-in browser.
+
+### Following one task in Cursor
+
+Agents the Cursor SDK starts do not appear in the Cursor client's agent list (Repositories); the SDK has no way to add them. Instead AgentForge keeps a progress page per task at `~/.agentforge/progress/<task_id>.md`: status, elapsed time, edited files, the latest 40 steps (newest first), the error and the worker's report, refreshed at most once a second while it runs. Once the task starts, the backend opens it in the last active Cursor window with `cursor --reuse-window`, and the editor follows the file as it changes; `forge_dispatch` also returns it as `progress_file`. `AGENTFORGE_OPEN_PROGRESS=off` stops the automatic opening; another command or an absolute path uses that editor. Deleting the task deletes the page.
+
+Cancel and pause record where they came from in the task's steps: the board, the supervisor's `forge_cancel`, or Ctrl+C in the terminal.
 
 ## Running without Claude Code
 

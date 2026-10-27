@@ -135,6 +135,8 @@ worker 可以从 `~/.agentforge/mcp.json`（或 `AGENTFORGE_MCP_CONFIG`）列出
 | `AGENTFORGE_STALL_WARN_SEC` | `120` | worker 静默多久后 `forge_status` 提示可能卡住 |
 | `AGENTFORGE_START_TIMEOUT_SEC` | `300` | 创建 agent 和每次开始运行的时限 |
 | `AGENTFORGE_AUTO_RETRY` | `1` | 因连接错误失败的轮次自动续跑一次；`0` 关闭 |
+| `AGENTFORGE_OPEN_PROGRESS` | `cursor` | 任务启动后用来打开进度页的编辑器命令；`off` 关闭 |
+| `AGENTFORGE_MONITOR_PORT` | `18862` | 后台提供只读监控网页的端口；`0` 关闭 |
 | `AGENTFORGE_MCP_CONFIG` | `~/.agentforge/mcp.json` | worker 可用的 MCP 服务器（绝对路径） |
 | `AGENTFORGE_WORKERS` | - | Worker 插件模块，逗号分隔 |
 | `AGENTFORGE_ENV_FILE` | `~/.agentforge/.env` | 设置时文件必须存在 |
@@ -158,7 +160,13 @@ agentforge monitor --once          # 单次快照（非 TTY 时也是这个）�
 agentforge monitor --web           # 只读网页 http://127.0.0.1:18862（--port 修改端口）
 ```
 
-监控按原样读取任务文件和设置：不会启动后台、创建数据目录或修改任务。没有后台响应时，进行中的任务标记 `*`，因为在后台响应前无法确定其真实状态。网页只接受本机 GET 请求。
+监控按原样读取任务文件和设置：不会启动后台、创建数据目录或修改任务。没有后台响应时，进行中的任务标记 `*`，因为在后台响应前无法确定其真实状态。网页只接受本机 GET 请求。后台运行时自己也在 `http://127.0.0.1:18862` 提供同一个网页（`AGENTFORGE_MONITOR_PORT` 修改，`0` 关闭；端口被占用时只记日志），可以在 Cursor 内置浏览器里一直开着。
+
+### 在 Cursor 里看单个任务
+
+Cursor SDK 启动的 agent 不会出现在 Cursor 客户端的 agent 列表（Repositories）里，SDK 没有提供写入这个列表的接口。AgentForge 改为给每个任务维护一个进度页 `~/.agentforge/progress/<task_id>.md`：状态、耗时、改过的文件、最近 40 步（最新在上）、错误和 worker 报告，运行中最多每秒刷新一次。任务启动后后台用 `cursor --reuse-window` 在最近使用的 Cursor 窗口打开它，编辑器会随文件更新；`forge_dispatch` 也返回 `progress_file`。`AGENTFORGE_OPEN_PROGRESS=off` 不自动打开，设为其它命令或绝对路径则用那个编辑器。删除任务时进度页一并删除。
+
+取消和暂停会在任务步骤里记下来源：看板、主会话的 `forge_cancel`，或终端 Ctrl+C。
 
 ## 不经 Claude Code 直接运行
 

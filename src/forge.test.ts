@@ -669,9 +669,10 @@ describe("board task controls", () => {
     const forge = makeForge(worker);
     const { task } = await forge.dispatch({ task: "hold", cwd: repo });
     await forge.followup(task.id, "later");
-    await forge.pause(task.id);
-    const cancelled = await forge.cancel(task.id);
+    await forge.pause(task.id, "board");
+    const cancelled = await forge.cancel(task.id, "board");
     expect(cancelled).toMatchObject({ status: "cancelled", pending: [] });
+    expect(cancelled.steps.map((s) => s.text)).toEqual(expect.arrayContaining(["Pause requested from the board.", "Cancelled from the board."]));
     expect(cancelled.turns.at(-1)?.status).toBe("cancelled");
     expect(worker.prompts).toHaveLength(1);
     await expect(forge.resume(task.id)).rejects.toThrow(/not paused/);
@@ -684,7 +685,8 @@ describe("board task controls", () => {
     await expect(forge.delete(task.id)).rejects.toThrow(/is running/);
     await forge.cancel(task.id);
 
-    const files = [path.join(home, "tasks", `${task.id}.json`), path.join(home, "tasks", `${task.id}.events.jsonl`)];
+    expect(forge.get(task.id).steps.some((s) => s.text === "Cancel requested by the supervisor (forge_cancel).")).toBe(true);
+    const files = [path.join(home, "tasks", `${task.id}.json`), path.join(home, "tasks", `${task.id}.events.jsonl`), path.join(home, "progress", `${task.id}.md`)];
     expect(files.every((f) => fs.existsSync(f))).toBe(true);
     await forge.delete(task.id);
     expect(files.some((f) => fs.existsSync(f))).toBe(false);

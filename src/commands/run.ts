@@ -113,7 +113,7 @@ export async function runCommand(argv: string[]): Promise<number> {
   process.once("SIGINT", () => {
     interrupted = true;
     log("\ninterrupt: cancelling the running turn...");
-    void forge.cancel(taskId).catch(() => undefined);
+    void forge.cancel(taskId, "cli").catch(() => undefined);
   });
 
   const tail = new StepTail();
