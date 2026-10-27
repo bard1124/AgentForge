@@ -269,7 +269,7 @@ function rule(c: Ctx) {
 }
 
 /**
- * A section's ▼ / ▶ toggle after its title; collapsed, the body is dropped and `summary` follows.
+ * A section's ⏷ / ⏵ toggle after its title; collapsed, the body is dropped and `summary` follows.
  * The toggle holds only the glyph: a desktop draws a Button natively from its label, without styled children.
  */
 type Fold = { id: SectionId; collapsed: boolean; summary?: RenderChildren; onToggle: () => void };
@@ -293,7 +293,7 @@ function section(c: Ctx, title: string, rows: RenderChildren[], aside?: RenderCh
           <Box flexDirection="row" alignItems="center" columnGap="sm" flexShrink={1}>
             {heading}
             <Button key={`fold-${f.id}`} plain dimColor onPress={f.onToggle}>
-              {f.collapsed ? "▶" : "▼"}
+              {f.collapsed ? "⏵" : "⏷"}
             </Button>
             {f.collapsed && f.summary !== undefined ? (
               typeof f.summary === "string" ? <Text size="footnote" dimColor wrap="truncate-end">{f.summary}</Text> : f.summary

@@ -368,7 +368,7 @@ test("every section but Dispatch collapses to its summary and saves the choice",
   const ui = await $.ui.mount({ ...PANE, surface: "desktop" });
   const posted = () => b.calls.filter((c) => c.path === "/api/settings").map((c) => c.body?.collapsed);
   expect(await ui.find({ key: "fold-dispatch" })).toBeUndefined();
-  expect((await ui.findAll({ type: "Button", text: /^[▼▶]$/ })).filter((b) => String(b.key).startsWith("fold-"))).toHaveLength(5);
+  expect((await ui.findAll({ type: "Button", text: /^[⏷⏵]$/ })).filter((b) => String(b.key).startsWith("fold-"))).toHaveLength(5);
 
   await ui.press({ key: "fold-savings" });
   expect(await ui.find({ type: "Text", text: /^75% saved$/ })).toBeUndefined();
@@ -416,8 +416,8 @@ test("sections saved as collapsed load collapsed", async ($, on) => {
   backend(on, { collapsed: ["executor", "tasks"] });
   await openBoard($);
   const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
-  expect((await ui.find({ key: "fold-executor" }))?.text).toBe("▶");
-  expect((await ui.find({ key: "fold-sdd" }))?.text).toBe("▼");
+  expect((await ui.find({ key: "fold-executor" }))?.text).toBe("⏵");
+  expect((await ui.find({ key: "fold-sdd" }))?.text).toBe("⏷");
   expect(await ui.find({ key: "model" })).toBeUndefined();
   expect(await title(ui, "Build login")).toBeUndefined();
   expect(await ui.find({ key: "sdd-open" })).toBeDefined();
@@ -429,7 +429,7 @@ test("a refused collapse puts the section back and shows why", async ($, on) => 
   await openBoard($);
   const ui = await $.ui.mount({ ...PANE, surface: "desktop" });
   await ui.press({ key: "fold-executor" });
-  expect((await ui.find({ key: "fold-executor" }))?.text).toBe("▼");
+  expect((await ui.find({ key: "fold-executor" }))?.text).toBe("⏷");
   expect(await ui.find({ key: "model" })).toBeDefined();
   expect(await ui.find({ type: "Text", text: /^Settings file is unreadable$/ })).toBeDefined();
   await ui.unmount();
