@@ -87,6 +87,10 @@ When the SDK resumes after a reconnect it can run the last tool calls again. Age
 
 Each task has an `order_status`: `queued`, `dispatching`, `executing`, `paused` (paused on the board: not counted as running, does not block a backend restart, stays paused across one; Claude Code should not re-dispatch it, resume it from the board), `completed`, `failed`, `blocked` (a budget ran out), `cancelled`, or `uncertain`. `uncertain` means the turn was cut off (for example the backend stopped mid-run): check the agent's conversation and the files before doing anything, and look the task up by its original `order_id` rather than creating a new one. `conversation_id` is the Cursor agent id, different from the order id.
 
+## Project worker notes
+
+Put environment facts every task would otherwise need repeating (build commands, offline Maven, shell, directories to leave alone) in `.agentforge/worker.md` in the repository, and anything that applies everywhere in `~/.agentforge/worker.md`. On dispatch the nearest repository file, searched from `cwd` up to the repository root, and the global file are added to the brief as a "Project notes" section; `forge_dispatch` lists the files used in its warnings. To keep the file out of the repository, add `.agentforge/` to `.git/info/exclude`. `AGENTS.md` and `.cursor/rules`, which Cursor reads itself, need not be repeated here.
+
 ## Parallel tasks and worktree isolation
 
 When several tasks change one repository at the same time, pass `isolation: "worktree"` to `forge_dispatch`. The task gets a git worktree from the current HEAD at `~/.agentforge/worktrees/<task_id>` on branch `agentforge/<task_id>`; the agent edits only there, and its diff holds only its own changes. Once `forge_accept` passes, the changes are applied to the original directory as uncommitted edits and the worktree and branch are removed. If they conflict, the worktree stays and the patch is left at `~/.agentforge/worktrees/<task_id>.patch` for a manual `git apply --3way`, after which you delete the task.

@@ -87,6 +87,10 @@ SDK 断线恢复时可能把最后几个工具调用再执行一遍。AgentForge
 
 每个任务都有 `order_status`：`queued`、`dispatching`、`executing`、`paused`（在看板上被暂停，不计入运行中、不阻止重启后台，重启后仍为暂停；Claude Code 不应重新派发，从看板恢复）、`completed`、`failed`、`blocked`（预算用完）、`cancelled` 或 `uncertain`。`uncertain` 表示轮次中途被打断（例如后台在运行中停止）：先检查 agent 会话和实际文件，再用原 `order_id` 查询，不要新建任务。`conversation_id` 是 Cursor agent 的 id，与 order id 不同。
 
+## 项目级 worker 说明
+
+每个任务都要重复交代的环境信息（构建命令、离线 Maven、shell、不要动的目录等）写进仓库里的 `.agentforge/worker.md`，所有对象都适用的写进 `~/.agentforge/worker.md`。派发时从 `cwd` 向上找到仓库根为止的最近一份，与全局那份一起以 "Project notes" 一节附加到 brief，`forge_dispatch` 的 warnings 会列出用到的文件。不想提交到仓库的话，把 `.agentforge/` 加进 `.git/info/exclude`。Cursor 自己会读的 `AGENTS.md` 和 `.cursor/rules` 不需要在这里重复。
+
 ## 并行任务与 worktree 隔离
 
 多个任务同时改同一个仓库时，给 `forge_dispatch` 传 `isolation: "worktree"`。任务会在 `~/.agentforge/worktrees/<task_id>` 下以当前 HEAD 新建一个 git worktree，分支为 `agentforge/<task_id>`，agent 只在这个目录里改，其 diff 也只包含自己的改动。`forge_accept` 校验通过后，把改动以未提交的形式应用回原目录，再删除 worktree 和分支。应用冲突时 worktree 保留，补丁留在 `~/.agentforge/worktrees/<task_id>.patch`，可以手动 `git apply --3way` 后删除该任务。

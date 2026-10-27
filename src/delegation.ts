@@ -237,8 +237,8 @@ export function promptContext(read: DelegationRead): string {
   const lines = [
     `AgentForge auto-dispatch: ON (${describeRoute(s)}).`,
     "You plan and accept; the agent implements. For requests that need code written, bugs fixed, or tests run: settle the plan, then hand the implementation to forge_dispatch with a complete brief, acceptance criteria, a narrow verify_command, and cwd. Pass order_id as a fresh UUID (crypto.randomUUID()); if a dispatch's outcome is unclear, retry with the same order_id and identical arguments instead of dispatching again.",
-    "Questions, explanations, discussion, and planning stay with you. Simple changes may still be done directly when that is clearly faster, unless the user wants them delegated.",
-    "Track with forge_wait/forge_status, review with forge_result, verify, then report. Do not edit project files the agent is working on.",
+    "Questions, explanations, discussion, and planning stay with you. Do it yourself instead of dispatching (starting an agent costs about a minute) when: the change is small (one file, a few dozen lines, or a config/text edit); it depends on this machine's live state (running services, local databases, credentials, browser or interactive debugging); or each step needs your judgement on fresh output. Dispatch multi-file implementation and test-writing work. When the user says to do it directly or to dispatch, follow that.",
+    "Track by running the wait_command forge_dispatch returns as a background shell command (or forge_wait), review with forge_result, verify, then report. Do not edit project files the agent is working on.",
   ];
   if (s.sdd.enabled) {
     lines.push(

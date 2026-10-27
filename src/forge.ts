@@ -8,7 +8,7 @@ import { isRetryableError, isTransientMessage } from "./errors.js";
 import { StepRecorder, truncate } from "./events.js";
 import { addWorktree, applyPatch, captureBaseline, diffFor, removeWorktree, summarizeChanges, worktreePatch } from "./git.js";
 import { loadMcpServers, McpConfigError, pickMcpServers } from "./mcp-config.js";
-import { buildBrief, buildReworkPrompt } from "./prompts.js";
+import { buildBrief, buildReworkPrompt, readProjectNotes } from "./prompts.js";
 import { TaskStore } from "./store.js";
 import { type ChangeSummary, type OrderStatus, type Step, type Task, type Turn, type Verification } from "./types.js";
 import { runVerification } from "./verify.js";
@@ -390,7 +390,9 @@ export class Forge {
       ? `You work in a git worktree of ${cwd} at ${workdir}, made for this task; edit files here only, not in ${cwd}. Ignored files (node_modules, build output) are not present; install or build here if you need them. Do not commit.`
       : undefined;
     const context = [input.context, note].filter(Boolean).join("\n\n") || undefined;
-    const brief = buildBrief({ task: input.task, cwd: workdir, acceptance: input.acceptance, verifyCommand: input.verifyCommand, context });
+    const notes = readProjectNotes(cwd, this.config.home);
+    if (notes) warnings.push(`Project notes added to the brief from ${notes.files.join(", ")}.`);
+    const brief = buildBrief({ task: input.task, cwd: workdir, acceptance: input.acceptance, verifyCommand: input.verifyCommand, context, projectNotes: notes?.text });
     try {
       await this.startTurn(live, brief);
     } catch (err) {
