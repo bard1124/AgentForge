@@ -94,6 +94,8 @@ function makeForge(worker: Worker, overrides: Partial<ReturnType<typeof loadConf
   return new Forge(config, new TaskStore(home), { cursor: worker });
 }
 
+/** File text with LF endings: on Windows git may check out or apply files with CRLF. */
+const readText = (file: string) => fs.readFileSync(file, "utf8").replaceAll("\r\n", "\n");
 const usage = (total: number) => ({ inputTokens: total - 10, outputTokens: 10, cacheReadTokens: 5, cacheWriteTokens: 0, totalTokens: total });
 
 describe("Forge", () => {
@@ -510,15 +512,15 @@ describe("worktree isolation", () => {
     expect(worker.sessionOpts[0]?.cwd).toBe(workdir);
     expect(worker.prompts[0]).toMatch(/git worktree of/);
     expect(warnings.join()).toMatch(/uncommitted file\(s\).*not in the worktree/);
-    expect(fs.readFileSync(path.join(repo, "a.txt"), "utf8")).toBe("one\n");
+    expect(readText(path.join(repo, "a.txt"))).toBe("one\n");
     expect((await forge.result(task.id, { includeDiff: true })).diff).toContain("+from worktree");
 
     const accepted = await forge.accept(task.id, {});
     expect(accepted.action).toBe("accepted");
     expect(accepted.applied).toMatch(/applied to .* as uncommitted edits/);
-    expect(fs.readFileSync(path.join(repo, "a.txt"), "utf8")).toBe("from worktree\n");
-    expect(fs.readFileSync(path.join(repo, "new.txt"), "utf8")).toBe("new\n");
-    expect(fs.readFileSync(path.join(repo, "dirty.txt"), "utf8")).toBe("already dirty\n");
+    expect(readText(path.join(repo, "a.txt"))).toBe("from worktree\n");
+    expect(readText(path.join(repo, "new.txt"))).toBe("new\n");
+    expect(readText(path.join(repo, "dirty.txt"))).toBe("already dirty\n");
     expect(fs.existsSync(workdir)).toBe(false);
     expect(worktrees()).toBe(1);
     expect(forge.get(task.id)).toMatchObject({ cwd: repo, worktree: { state: "applied" } });
@@ -536,7 +538,7 @@ describe("worktree isolation", () => {
     const wt = forge.get(task.id).worktree!;
     expect(wt.state).toBe("conflict");
     expect(fs.existsSync(wt.patch!)).toBe(true);
-    expect(fs.readFileSync(path.join(repo, "a.txt"), "utf8")).toBe("edited meanwhile\n");
+    expect(readText(path.join(repo, "a.txt"))).toBe("edited meanwhile\n");
 
     await forge.delete(task.id);
     expect(fs.existsSync(wt.root)).toBe(false);
