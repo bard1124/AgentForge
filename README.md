@@ -86,7 +86,7 @@ node dist/cli.js install
 
 看板的出现方式是插件唯一的选项，在 Claude Code 的 Settings → Plugins → AgentForge → **Board** 中设置：`button`（默认）在看板关闭时于输入框上方显示一行状态和「Open board」按钮；`auto` 在会话开始时自动打开；`command` 只通过 `/forge-board` 打开。派工相关设置都在看板里改。
 
-除「Dispatch」外，看板各区都可点标题前的 ▾ / ▸ 折叠或展开，折叠后标题旁显示一行摘要；折叠状态保存在 `~/.agentforge/delegation.json`，所有会话共用。
+除「Dispatch」外，看板各区都可点标题后的 ⏷ / ⏵ 折叠或展开，折叠后箭头旁显示一行摘要；折叠状态保存在 `~/.agentforge/delegation.json`，所有会话共用。
 
 ## 第一次派工
 
