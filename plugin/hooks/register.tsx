@@ -268,7 +268,10 @@ function rule(c: Ctx) {
   return <Svg source={RULE_SVG} alt="" height={1} />;
 }
 
-/** A section's title is its ▼ / ▶ toggle; collapsed, the body is dropped and `summary` follows the title. */
+/**
+ * A section's ▼ / ▶ toggle after its title; collapsed, the body is dropped and `summary` follows.
+ * The toggle holds only the glyph: a desktop draws a Button natively from its label, without styled children.
+ */
 type Fold = { id: SectionId; collapsed: boolean; summary?: RenderChildren; onToggle: () => void };
 
 const fold = ($: EngineInterface, m: BoardModel, id: SectionId, summary?: RenderChildren): Fold => ({
@@ -288,8 +291,9 @@ function section(c: Ctx, title: string, rows: RenderChildren[], aside?: RenderCh
       <Box flexDirection="row" justifyContent="space-between" alignItems="center" columnGap="sm">
         {f ? (
           <Box flexDirection="row" alignItems="center" columnGap="sm" flexShrink={1}>
-            <Button key={`fold-${f.id}`} plain label={title} onPress={f.onToggle}>
-              <Text weight="semibold">{title}</Text> <Text size="footnote" dimColor>{f.collapsed ? "▶" : "▼"}</Text>
+            {heading}
+            <Button key={`fold-${f.id}`} plain dimColor onPress={f.onToggle}>
+              {f.collapsed ? "▶" : "▼"}
             </Button>
             {f.collapsed && f.summary !== undefined ? (
               typeof f.summary === "string" ? <Text size="footnote" dimColor wrap="truncate-end">{f.summary}</Text> : f.summary
