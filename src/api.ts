@@ -26,6 +26,8 @@ export interface ApiContext {
   store: TaskStore;
   updater: Updater;
   version: string;
+  /** Commit of the checkout when this backend started; differs from the checkout's HEAD after an update. */
+  commit?: string;
   startedAt: string;
   sessions: () => number;
   /** Replaces this backend with a fresh one running the installed code. */
@@ -245,7 +247,14 @@ route("POST", "/api/sdd/save", (ctx, body) => {
   return sddCall(ctx, (s) => s.saveTask(str(b.project) ?? "", str(b.task) ?? "", str(b.content) ?? "", str(b.baseRevision) ?? "", str(b.workspace) ?? ""));
 });
 
-route("GET", "/api/update", (ctx) => ({ ...ctx.updater.status(), running: runningTasks(ctx), backendVersion: ctx.version, installedVersion: packageVersion() }));
+route("GET", "/api/update", async (ctx) => ({
+  ...ctx.updater.status(),
+  running: runningTasks(ctx),
+  backendVersion: ctx.version,
+  installedVersion: packageVersion(),
+  backendCommit: ctx.commit,
+  installedCommit: await ctx.updater.head(),
+}));
 route("POST", "/api/update/check", async (ctx) => ctx.updater.check());
 route("POST", "/api/update/check-daily", (ctx) => ctx.updater.checkDaily());
 route("POST", "/api/update/apply", (ctx) => ctx.updater.apply());

@@ -210,6 +210,7 @@ export async function runBackend(config: ForgeConfig): Promise<void> {
     root: packageRoot(),
     home,
     running,
+    restart: () => restart(),
     reinstall: async () => {
       await new Promise<void>((resolve, reject) => {
         const child = spawn(process.execPath, [cli, "install"], { cwd: home, stdio: "ignore", windowsHide: true, env: { ...process.env, AGENTFORGE_HOME: home } });
@@ -232,7 +233,8 @@ export async function runBackend(config: ForgeConfig): Promise<void> {
     setTimeout(() => void shutdown(), 200);
   };
   const stop = () => void setTimeout(() => void shutdown(), 100);
-  const ctx: ApiContext = { config, forge, store, updater, version, startedAt, sessions: () => sessions.size, restart, stop };
+  const commit = await updater.head();
+  const ctx: ApiContext = { config, forge, store, updater, version, commit, startedAt, sessions: () => sessions.size, restart, stop };
 
   const server = http.createServer(async (req, res) => {
     try {

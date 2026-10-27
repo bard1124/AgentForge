@@ -77,6 +77,25 @@ describe("Updater", () => {
     expect(reinstalls).toBe(1);
   });
 
+  it("updates in one call: fetches, installs, and restarts the backend once no task runs", async () => {
+    let restarts = 0;
+    const u = new Updater({ root: clone, home: path.join(tmp, "home"), running: () => running, reinstall: async () => void reinstalls++, restart: () => void restarts++, steps: { dependencies: noop, build: noop } });
+    const before = await u.head();
+    u.apply();
+    await u.settled();
+    expect(u.status().apply).toBeUndefined();
+    expect(u.status()).toMatchObject({ state: "up_to_date", message: "Up to date." });
+
+    commit(other, "b.txt", "two\n");
+    git(other, "push", "-q");
+    u.apply();
+    await u.settled();
+    expect(u.status()).toMatchObject({ state: "up_to_date", apply: { ok: true, stage: "installed" } });
+    expect(u.status().message).toMatch(/restarts by itself/);
+    expect(await u.head()).not.toBe(before);
+    expect(restarts).toBe(1);
+  });
+
   it("blocks on local changes, divergence, running tasks, and an unverified remote, changing nothing", async () => {
     commit(other, "b.txt", "two\n");
     git(other, "push", "-q");

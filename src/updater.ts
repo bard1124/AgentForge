@@ -33,6 +33,8 @@ export interface UpdaterDeps {
   running: () => string[];
   /** Re-installs the plugin from the updated checkout. */
   reinstall: () => Promise<void>;
+  /** Restarts the backend so it runs the installed code; called once no task is running. */
+  restart?: () => void;
   /** Dependency and build commands; npm ci and npm run build by default. */
   steps?: { dependencies: [string, string[]]; build: [string, string[]] };
 }
@@ -85,6 +87,11 @@ export class Updater {
   private async git(args: string[], timeout = 30_000): Promise<string> {
     const { stdout } = await run("git", args, { cwd: this.deps.root, timeout, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
     return stdout.trim();
+  }
+
+  /** The checkout's current commit, or undefined when git cannot tell. */
+  async head(): Promise<string | undefined> {
+    return this.git(["rev-parse", "--short", "HEAD"]).catch(() => undefined);
   }
 
   /** The cached state only; never touches the network. */
@@ -169,6 +176,11 @@ export class Updater {
 
   private applying?: Promise<void>;
 
+  private restartWhenIdle(restart: () => void): void {
+    if (!this.deps.running().length) return restart();
+    setTimeout(() => this.restartWhenIdle(restart), 5_000).unref();
+  }
+
   private async doApply(): Promise<void> {
     const prev = this.load().apply;
     const resume = prev && !prev.ok && prev.stage ? prev.stage : undefined;
@@ -181,7 +193,8 @@ export class Updater {
       if (!resume) {
         const gate = await this.inspect(true);
         if (gate.state !== "available") {
-          this.save({ ...gate, apply: { at: record.at, ok: false, error: `Not installed: ${gate.message}` } });
+          // Nothing to install is an answer, not a failed install.
+          this.save({ ...gate, apply: prev?.ok ? prev : undefined });
           return;
         }
         await this.git(["merge", "--ff-only", "--quiet", "@{u}"]);
@@ -203,7 +216,15 @@ export class Updater {
       }
       record = { ...record, ok: true, error: undefined };
       const after = await this.inspect(false);
-      this.save({ ...after, apply: record, message: "Installed. Run /reload-plugins (or restart Claude Code) and restart the backend to use the new version." });
+      const restart = this.deps.restart;
+      this.save({
+        ...after,
+        apply: record,
+        message: restart
+          ? "Installed. The backend restarts by itself once no task is running; then run /reload-plugins (or restart Claude Code)."
+          : "Installed. Run /reload-plugins (or restart Claude Code) and restart the backend to use the new version.",
+      });
+      if (restart) this.restartWhenIdle(restart);
     } catch (err) {
       record = { ...record, ok: false, error: firstLine(err) };
       this.save({ ...this.load(), apply: record, message: `Update stopped${record.stage ? ` after ${record.stage}` : ""}: ${record.error}. Retrying continues from there.` });

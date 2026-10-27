@@ -729,7 +729,10 @@ function updateSection($: EngineInterface, c: Ctx, m: BoardModel) {
     row(c, `AgentForge ${m.backend ? `v${m.backend.version}` : ""}`.trim(), status, toggleDetails),
   ];
   if (m.updateOpen) {
-    const stale = u?.backendVersion && u.installedVersion && u.backendVersion !== u.installedVersion;
+    const newerCommit = !!u?.backendCommit && !!u.installedCommit && u.backendCommit !== u.installedCommit;
+    const stale = newerCommit || (!!u?.backendVersion && !!u.installedVersion && u.backendVersion !== u.installedVersion);
+    const running = newerCommit ? `${u!.backendCommit}, installed ${u!.installedCommit}` : `${u?.backendVersion}, installed ${u?.installedVersion}`;
+    const canUpdate = !u?.busy && !["ahead", "dirty", "diverged", "no_upstream", "unverified_remote"].includes(u?.state ?? "");
     const failed = u?.apply && !u.apply.ok;
     rows.push(
       row(
@@ -739,7 +742,7 @@ function updateSection($: EngineInterface, c: Ctx, m: BoardModel) {
         undefined,
         <Box flexDirection="column" gap="sm">
           {failed ? <Text size="footnote" color="warning" wrap="wrap">{`Last install stopped${u!.apply!.stage ? ` after ${u!.apply!.stage}` : ""}: ${u!.apply!.error ?? ""}`}</Text> : null}
-          {stale ? <Text size="footnote" color="warning" wrap="wrap">{`Backend runs ${u!.backendVersion}, installed ${u!.installedVersion}: restart the backend, then /reload-plugins.`}</Text> : null}
+          {stale ? <Text size="footnote" color="warning" wrap="wrap">{`Backend runs ${running}: restart the backend, then /reload-plugins.`}</Text> : null}
           <Box flexDirection="row" columnGap="sm" flexWrap="wrap" justifyContent="flex-end">
             <Button key="upd-refresh" plain dimColor onPress={() => void refreshUpdate($)}>Refresh status</Button>
             <Button key="upd-check" variant="secondary" onPress={() => void refreshUpdate($, "POST", "/api/update/check")}>Check for updates</Button>
@@ -748,9 +751,9 @@ function updateSection($: EngineInterface, c: Ctx, m: BoardModel) {
                 Restart backend
               </Button>
             ) : null}
-            {u?.state === "available" || failed ? (
+            {canUpdate || failed ? (
               <Button key="upd-apply" variant="primary" onPress={() => void refreshUpdate($, "POST", "/api/update/apply")}>
-                {failed ? "Retry install" : "Install update"}
+                {failed ? "Retry install" : "Update to latest"}
               </Button>
             ) : null}
           </Box>

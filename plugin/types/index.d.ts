@@ -38,6 +38,8 @@ export type UpdateView = {
   running?: string[];
   backendVersion?: string;
   installedVersion?: string;
+  backendCommit?: string;
+  installedCommit?: string;
 };
 
 export type SddProject = { id: string; name: string; tasks: number };

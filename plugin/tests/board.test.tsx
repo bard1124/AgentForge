@@ -21,7 +21,7 @@ const ORDER_OF: Record<string, string> = { running: "executing", paused: "paused
 const taskRow = (id: string, title: string, status: string): Row => ({ id, title, status, orderStatus: ORDER_OF[status] ?? status, worker: "cursor", model: "composer-2.5", updatedAt: "" });
 
 /** An in-memory agentforge-backend answering the board's /api routes. */
-function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean; tasks?: Row[]; collapsed?: string[]; settingsDown?: boolean } = {}) {
+function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean; tasks?: Row[]; collapsed?: string[]; settingsDown?: boolean; installedCommit?: string } = {}) {
   const calls: Call[] = [];
   const tasks = opts.tasks ?? [taskRow("t-1", "Build login", "running")];
   const settings: Record<string, unknown> = { enabled: false, executor: "cursor", sdd: { enabled: true, workspace: WS }, ...(opts.collapsed ? { board: { collapsed: opts.collapsed } } : {}) };
@@ -119,7 +119,7 @@ function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean; task
         doc = { ...doc, content: String(body!.content), revision: "r2" };
         return json(200, doc);
       case "GET /api/update":
-        return json(200, { state: "up_to_date", message: "Up to date.", local: "abc1234", remote: "abc1234", backendVersion: "0.4.0", installedVersion: "0.4.0" });
+        return json(200, { state: "up_to_date", message: "Up to date.", local: "abc1234", remote: "abc1234", backendVersion: "0.4.0", installedVersion: "0.4.0", backendCommit: "abc1234", installedCommit: opts.installedCommit ?? "abc1234" });
       case "POST /api/update/check-daily":
         return json(200, { state: "up_to_date", message: "Up to date." });
       default:
@@ -211,8 +211,20 @@ test("the update section checks daily and shows the local status", async ($, on)
   expect(b.calls.some((c) => c.method === "POST" && c.path === "/api/update/check-daily")).toBe(true);
   await ui.press({ key: "upd-open" });
   expect((await ui.find({ type: "Text", text: /Up to date/ }))?.text).toMatch(/●/);
-  expect(await ui.find({ key: "upd-apply" })).toBeUndefined();
+  expect((await ui.find({ key: "upd-apply" }))?.text).toBe("Update to latest");
   expect(await ui.find({ key: "upd-check" })).toBeDefined();
+  expect(await ui.find({ key: "upd-restart" })).toBeUndefined();
+  await ui.unmount();
+});
+
+test("a backend older than the installed commit offers a restart even with the same version", async ($, on) => {
+  backend(on, { installedCommit: "def5678" });
+  await openBoard($);
+  await $.command.run({ command: "forge-board", args: "", origin: { kind: "person" }, presentation: "default" } as never);
+  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
+  await ui.press({ key: "upd-open" });
+  expect((await ui.find({ type: "Text", text: /Backend runs abc1234, installed def5678/ }))?.text).toBeDefined();
+  expect(await ui.find({ key: "upd-restart" })).toBeDefined();
   await ui.unmount();
 });
 
