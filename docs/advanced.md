@@ -77,7 +77,11 @@ status、wait、result 和 cancel 都接受 `task_id` 或 `order_id`。在 Claud
 
 来自 Cursor 的错误带 `error_type` 和 `retryable` 判断：工具错误写在错误文本里，失败的轮次写在 `lastError` 中。判断综合了 SDK 的 `isRetryable`、错误类别（网络或限流）和连接失败信息，因为 SDK 对普通断线也常报 `isRetryable: false`。worker 在 `AGENTFORGE_START_TIMEOUT_SEC` 内没有开始运行也按此处理；对该任务 `forge_retry` 会继续等待同一个 agent，不会另开一个。
 
-某一轮因可重试的连接错误失败时（例如 `Agent turn stopped after repeated resume attempts made no progress`，这是 SDK 在与 Cursor 的连接反复断开时抛出的），AgentForge 会在同一个 agent 上自动续跑一次，并要求它从中断处接着做；期间任务保持 `running`。如果续跑也失败，`forge_status` 会提示连接反复中断，并建议把任务拆小。设置 `AGENTFORGE_AUTO_RETRY=0` 可关闭。
+某一轮因可重试的连接错误失败时（例如 `Agent turn stopped after repeated resume attempts made no progress`，这是 SDK 在与 Cursor 的连接反复断开时抛出的），AgentForge 会在同一个 agent 上自动续跑，最多 3 次，每次等待时间翻倍（5s、10s、20s）。从第二次起，只有上一次续跑确实有进展（完成过工具调用）才会再试。续跑提示里带上已编辑的文件、`git diff --stat` 和最近完成的步骤，并要求 worker 不要重读已读过的文件。期间任务保持 `running`。续跑用完或没有进展时，`forge_status` 会提示连接反复中断，并建议把任务拆小。设置 `AGENTFORGE_AUTO_RETRY=0` 可关闭。
+
+长轮次最容易被断线打断，所以任务按“切片”执行：worker 每完成一块（几个文件加对应检查）就结束本轮，最后一行写 `NEXT: <下一块>`；AgentForge 自动发送“继续”，直到 worker 不再写 `NEXT:` 并给出最终报告。整个过程中任务保持 `running`，`forge_wait` 等到全部切片完成。`AGENTFORGE_SLICES=off` 可关闭。
+
+worker 若一直在读代码、迟迟不动手（默认 15 次工具调用或 10 分钟仍没有编辑），AgentForge 会提醒它一次立即开始实现，`forge_status` 也会提示“still exploring”。同时运行的 worker 默认最多 2 个，多出的任务以 `queued` 状态排队，有空位后自动启动；排队中的任务可以 `forge_cancel`。task 与 context 合计超过约 4,000 字符时，派发会返回警告，建议拆分任务或把细节放进文档再引用。
 
 SDK 断线恢复时可能把最后几个工具调用再执行一遍。AgentForge 发现同一调用完成两次时会记一条步骤，并在 `forge_result` 的 `replayed` 中列出：被重放的编辑可能写入了两次。`forge_result` 还会标出同一目录下其他任务编辑过的文件（`byOtherTask`），diff 默认不包含它们。
 
@@ -103,7 +107,7 @@ worktree 从 HEAD 开始：原目录里未提交的改动不在其中，`node_mo
 
 ## 预算与用量
 
-每个任务有轮次预算（`max_turns`，默认 20）和 worker 时间预算（`max_minutes`，默认 60，只计算轮次运行的时间）。超出时间预算的轮次会被取消；任一预算用完后，新轮次会被拒绝，并提示 Claude Code 先征求你的同意。`forge_status` 和 `forge_result` 以 `used/max` 显示 `budget`。
+每个任务有轮次预算（`max_turns`，默认 30）和 worker 时间预算（`max_minutes`，默认 60，只计算轮次运行的时间）。超出时间预算的轮次会被取消；任一预算用完后，新轮次会被拒绝，并提示 Claude Code 先征求你的同意。`forge_status` 和 `forge_result` 以 `used/max` 显示 `budget`。
 
 `forge_result` 汇总任务各轮次的 token 用量；Cursor 账号提供计费数据时，改用计费总量（以及 `chargedUsd`）。
 
@@ -132,13 +136,19 @@ worker 可以从 `~/.agentforge/mcp.json`（或 `AGENTFORGE_MCP_CONFIG`）列出
 | `AGENTFORGE_MODEL_PARAMS` | - | 默认模型参数，`id=value,...`；看板的强度覆盖对应参数 |
 | `AGENTFORGE_SETTING_SOURCES` | `project` | worker 加载的 Cursor 设置层（项目规则、AGENTS.md） |
 | `AGENTFORGE_AUTO_REVIEW` | 关 | `1` 为工具调用开启 Cursor Auto-review |
-| `AGENTFORGE_MAX_TURNS` | `20` | 每个任务的轮次预算 |
+| `AGENTFORGE_MAX_TURNS` | `30` | 每个任务的轮次预算 |
 | `AGENTFORGE_MAX_TASK_MINUTES` | `60` | 每个任务的 worker 时间预算 |
 | `AGENTFORGE_MAX_REWORK` | `3` | 验证失败后的自动返工轮数 |
 | `AGENTFORGE_VERIFY_TIMEOUT_SEC` | `900` | 验证命令超时 |
 | `AGENTFORGE_STALL_WARN_SEC` | `120` | worker 静默多久后 `forge_status` 提示可能卡住 |
 | `AGENTFORGE_START_TIMEOUT_SEC` | `300` | 创建 agent 和每次开始运行的时限 |
-| `AGENTFORGE_AUTO_RETRY` | `1` | 因连接错误失败的轮次自动续跑一次；`0` 关闭 |
+| `AGENTFORGE_AUTO_RETRY` | `3` | 因连接错误失败的轮次自动续跑的次数（最多 3）；`0` 关闭 |
+| `AGENTFORGE_AUTO_RETRY_DELAY_SEC` | `5` | 首次自动续跑前的等待，之后每次翻倍 |
+| `AGENTFORGE_SLICES` | `on` | 让 worker 分切片执行并自动继续；`off` 关闭 |
+| `AGENTFORGE_MAX_CONCURRENT` | `2` | 同时运行的 worker 数，多出的排队；`0` 不限 |
+| `AGENTFORGE_EXPLORE_NUDGE_CALLS` | `15` | 多少次工具调用仍无编辑时提醒 worker 动手；`0` 关闭 |
+| `AGENTFORGE_EXPLORE_NUDGE_MINUTES` | `10` | 或运行多久仍无编辑时提醒；`0` 关闭 |
+| `AGENTFORGE_BRIEF_WARN_CHARS` | `4000` | task + context 超过此长度时派发返回警告 |
 | `AGENTFORGE_OPEN_PROGRESS` | `cursor` | 任务启动后用来打开进度页的编辑器命令；`off` 关闭 |
 | `AGENTFORGE_MONITOR_PORT` | `18862` | 后台提供只读监控网页的端口；`0` 关闭 |
 | `AGENTFORGE_MCP_CONFIG` | `~/.agentforge/mcp.json` | worker 可用的 MCP 服务器（绝对路径） |

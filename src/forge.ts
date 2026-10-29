@@ -9,7 +9,7 @@ import { StepRecorder, truncate } from "./events.js";
 import { addWorktree, applyPatch, captureBaseline, diffFor, removeWorktree, summarizeChanges, worktreePatch } from "./git.js";
 import { loadMcpServers, McpConfigError, pickMcpServers } from "./mcp-config.js";
 import { historyEstimate, parseWorkerEstimate } from "./estimate.js";
-import { buildBrief, buildReworkPrompt, readProjectNotes } from "./prompts.js";
+import { buildBrief, buildContinuePrompt, buildResumePrompt, buildReworkPrompt, EXPLORE_NUDGE, nextSlice, readProjectNotes, type ResumeState } from "./prompts.js";
 import { TaskStore } from "./store.js";
 import { type ChangeSummary, type OrderStatus, type Step, type Task, type Turn, type Verification } from "./types.js";
 import { runVerification } from "./verify.js";
@@ -84,6 +84,8 @@ interface LiveTask {
   pausing?: boolean;
   /** Set by cancel() and shutdown(): the ending turn is not continued automatically. */
   cancelling?: boolean;
+  /** Set while waiting before an automatic retry; calling it ends the wait early. */
+  backoff?: () => void;
   waiters: Set<() => void>;
 }
 
@@ -95,9 +97,6 @@ function relativeTo(cwd: string, file: string): string {
   const rel = path.relative(cwd, path.resolve(cwd, file));
   return rel.startsWith("..") || path.isAbsolute(rel) ? path.resolve(cwd, file) : rel.split(path.sep).join("/");
 }
-
-const AUTO_RETRY_PROMPT =
-  "Your previous turn was cut off by a connection error. Continue from where you stopped: check what is already done (files, git diff) and do not redo finished work. The original task is unchanged.";
 
 export interface DispatchInput {
   orderId?: string;
@@ -369,7 +368,14 @@ export class Forge {
     const context = [input.context, note].filter(Boolean).join("\n\n") || undefined;
     const notes = readProjectNotes(cwd, this.config.home);
     if (notes) warnings.push(`Project notes added to the brief from ${notes.files.join(", ")}.`);
-    const brief = buildBrief({ task: input.task, cwd: workdir, acceptance: input.acceptance, verifyCommand: input.verifyCommand, context, projectNotes: notes?.text });
+    const brief = buildBrief({ task: input.task, cwd: workdir, acceptance: input.acceptance, verifyCommand: input.verifyCommand, context, projectNotes: notes?.text, slices: this.config.slices });
+    const size = input.task.length + (input.context?.length ?? 0);
+    if (this.config.briefWarnChars > 0 && size > this.config.briefWarnChars) {
+      warnings.push(
+        `The brief is ${size} characters (task + context). Long briefs make workers spend their first turn reading instead of editing, and long turns are the ones connection drops cut off. ` +
+          "Next time split the work into tasks of one area each, or put the detail in an SDD document and reference it.",
+      );
+    }
 
     const task: Task = {
       id,
@@ -402,9 +408,19 @@ export class Forge {
       activeMs: 0,
       estimate: historyEstimate(this.list(), { cwd, model, brief }),
     };
-    this.store.save(task);
     const live: LiveTask = { task, waiters: new Set() };
     this.live.set(task.id, live);
+    const running = this.runningCount();
+    if (this.config.maxConcurrent > 0 && running >= this.config.maxConcurrent) {
+      task.queuedBrief = brief;
+      this.queue.push(task.id);
+      this.addStep(task, { kind: "status", text: `Queued: ${running} task(s) already running (limit ${this.config.maxConcurrent}).` });
+      this.store.save(task);
+      warnings.push(`Queued behind ${running} running task(s) (AGENTFORGE_MAX_CONCURRENT=${this.config.maxConcurrent}); it starts when one ends. forge_wait works as usual.`);
+      this.onDispatched?.(task);
+      return { task, warnings };
+    }
+    this.store.save(task);
 
     try {
       await this.startTurn(live, brief);
@@ -412,11 +428,37 @@ export class Forge {
       task.status = "error";
       this.addStep(task, { kind: "error", text: `Failed to start worker: ${(err as Error).message}` });
       this.persist(task);
+      this.pumpQueue();
       const again = isRetryableError(err) ? ` forge_retry with task_id ${task.id} tries again on the same task.` : "";
       throw new ForgeError(`Task ${task.id} could not start: ${(err as Error).message}${again}`, { cause: err });
     }
     this.onDispatched?.(task);
     return { task, warnings };
+  }
+
+  private readonly queue: string[] = [];
+
+  private runningCount(): number {
+    return [...this.live.values()].filter((l) => l.task.status === "running").length;
+  }
+
+  /** Starts queued tasks while worker slots are free. */
+  private pumpQueue(): void {
+    const cap = this.config.maxConcurrent;
+    while (this.queue.length && (cap === 0 || this.runningCount() < cap)) {
+      const live = this.live.get(this.queue.shift()!);
+      const brief = live?.task.queuedBrief;
+      if (!live || live.task.status !== "queued" || brief === undefined) continue;
+      const { task } = live;
+      delete task.queuedBrief;
+      this.addStep(task, { kind: "status", text: "A worker slot is free; starting." });
+      this.startTurn(live, brief).catch((err: Error) => {
+        this.addStep(task, { kind: "error", text: `Failed to start worker: ${err.message}` });
+        this.persist(task);
+        for (const notify of [...live.waiters]) notify();
+        this.pumpQueue();
+      });
+    }
   }
 
   get(id: string): Task {
@@ -553,6 +595,12 @@ export class Forge {
     const live = await this.claim(id);
     const { task } = live;
     const last = task.turns.at(-1);
+    if (!last && task.status === "interrupted" && task.queuedBrief !== undefined) {
+      const brief = task.queuedBrief;
+      delete task.queuedBrief;
+      await this.startTurn(live, brief);
+      return task.turns.at(-1)!;
+    }
     if (!last || (task.status !== "error" && task.status !== "interrupted")) {
       throw new ForgeError(`Task ${id} has no failed turn to retry (status: ${task.status}).`);
     }
@@ -569,10 +617,11 @@ export class Forge {
     const live = this.live.get(id);
     const task = this.get(id);
     if (task.status !== "running") throw new ForgeError(`Task ${id} is not running (status: ${task.status}).`);
-    if (!live?.run) throw new ForgeError(`Task ${id} is still starting or owned by another AgentForge process (pid ${task.ownerPid}); try again shortly.`);
+    if (!live?.run && !live?.backoff) throw new ForgeError(`Task ${id} is still starting or owned by another AgentForge process (pid ${task.ownerPid}); try again shortly.`);
     this.addStep(task, { kind: "status", text: `Pause requested ${CANCEL_SOURCE[by]}.` });
     live.pausing = true;
-    await live.run.cancel();
+    if (live.run) await live.run.cancel();
+    else live.backoff?.();
     await live.done;
     return task;
   }
@@ -600,12 +649,23 @@ export class Forge {
     }
     const live = this.live.get(id);
     const task = this.get(id);
+    if (task.status === "queued" && live?.task.queuedBrief !== undefined) {
+      this.queue.splice(this.queue.indexOf(id), 1);
+      delete task.queuedBrief;
+      task.status = "cancelled";
+      task.pending = [];
+      this.addStep(task, { kind: "status", text: `Cancelled while queued ${CANCEL_SOURCE[by]}.` });
+      this.persist(task);
+      for (const notify of [...live.waiters]) notify();
+      return task;
+    }
     if (task.status !== "running") throw new ForgeError(`Task ${id} is not running (status: ${task.status}).`);
-    if (!live?.run) throw new ForgeError(`Task ${id} is owned by another AgentForge process (pid ${task.ownerPid}).`);
+    if (!live?.run && !live?.backoff) throw new ForgeError(`Task ${id} is owned by another AgentForge process (pid ${task.ownerPid}).`);
     task.pending = [];
     this.addStep(task, { kind: "status", text: `Cancel requested ${CANCEL_SOURCE[by]}.` });
     live.cancelling = true;
-    await live.run.cancel();
+    if (live.run) await live.run.cancel();
+    else live.backoff?.();
     await live.done;
     return task;
   }
@@ -836,7 +896,7 @@ export class Forge {
     return live.session;
   }
 
-  private async startTurn(live: LiveTask, prompt: string, autoRetry = false): Promise<void> {
+  private async startTurn(live: LiveTask, prompt: string, auto?: "autoRetry" | "autoContinue"): Promise<void> {
     const { task } = live;
     const budget = this.budgetOf(task);
     if (budget.exhausted) {
@@ -845,7 +905,7 @@ export class Forge {
           "Ask the user before continuing; dispatch a new task with a narrower scope or higher max_turns / max_minutes.",
       );
     }
-    const turn: Turn = { index: task.turns.length + 1, prompt, status: "running", startedAt: now(), ...(autoRetry ? { autoRetry } : {}) };
+    const turn: Turn = { index: task.turns.length + 1, prompt, status: "running", startedAt: now(), ...(auto ? { [auto]: true } : {}) };
     task.turns.push(turn);
     task.status = "running";
     task.lastEventAt = now();
@@ -894,6 +954,7 @@ export class Forge {
         recorder.record(message);
         this.noteToolCall(task, message, completed);
         if (eta.open) this.noteEstimate(task, message, eta);
+        if (!task.nudgedAt && !task.touched?.length && message.type === "tool_call" && message.status === "completed") await this.nudgeIfExploring(live, run, turn);
         if (Date.now() - lastSave > 1000) {
           lastSave = Date.now();
           this.persist(task);
@@ -925,27 +986,57 @@ export class Forge {
       task.pending = [];
     }
     live.run = undefined;
-    const autoRetry = turn.status === "error" && !!turn.retryable && !turn.autoRetry && !stopping && this.config.autoRetry > 0 && !this.budgetOf(task).exhausted;
-    // Stays running across an automatic retry, so a poll in between never reports the failure.
-    task.status = autoRetry ? "running" : turn.status;
+    const exhausted = !!this.budgetOf(task).exhausted;
+    const retries = this.trailingAutoRetries(task);
+    // Past the first retry, only a turn that got something done earns another; a dead connection just fails again.
+    const autoRetry =
+      turn.status === "error" && !!turn.retryable && !stopping && !exhausted && retries < this.config.autoRetry && (retries === 0 || completed.size > 0);
+    const slice = turn.status === "finished" && this.config.slices ? nextSlice(turn.result) : undefined;
+    const carryOn = !!slice && !stopping && !exhausted && task.pending.length === 0;
+    // Stays running across an automatic retry or slice, so a poll in between never reports a stop.
+    task.status = autoRetry || carryOn ? "running" : turn.status;
     if (turn.error) this.addStep(task, { kind: "error", text: truncate(turn.error, 300) });
+    if (slice && exhausted) this.addStep(task, { kind: "status", text: `The worker planned another slice (${truncate(slice, 160)}) but the task budget is used up.` });
     this.persist(task);
 
     if (autoRetry) {
-      this.addStep(task, { kind: "status", text: "Transient connection error; continuing automatically on the same agent (once)." });
+      const delayMs = this.config.autoRetryDelayMs * 2 ** retries;
+      this.addStep(task, {
+        kind: "status",
+        text: `Transient connection error; continuing automatically on the same agent (attempt ${retries + 1} of ${this.config.autoRetry})${delayMs ? ` in ${Math.round(delayMs / 1000)}s` : ""}.`,
+      });
       await live.session?.close().catch(() => undefined);
       live.session = undefined;
+      await this.backoff(live, delayMs);
+      if (live.pausing || live.cancelling) {
+        task.status = live.pausing ? "paused" : "cancelled";
+        if (live.cancelling) task.pending = [];
+        live.pausing = false;
+        live.cancelling = false;
+        this.persist(task);
+      } else {
+        try {
+          await this.startTurn(live, buildResumePrompt(await this.resumeState(task, turn)), "autoRetry");
+          return;
+        } catch (err) {
+          this.addStep(task, { kind: "error", text: `Automatic retry failed to start: ${(err as Error).message}` });
+          this.persist(task);
+        }
+      }
+    } else if (carryOn) {
+      this.addStep(task, { kind: "status", text: `Slice done; continuing with: ${truncate(slice, 200)}` });
       try {
-        await this.startTurn(live, AUTO_RETRY_PROMPT, true);
+        await this.startTurn(live, buildContinuePrompt(slice), "autoContinue");
         return;
       } catch (err) {
-        this.addStep(task, { kind: "error", text: `Automatic retry failed to start: ${(err as Error).message}` });
+        task.status = turn.status;
+        this.addStep(task, { kind: "error", text: `Next slice failed to start: ${(err as Error).message}` });
         this.persist(task);
       }
     }
 
-    const next = turn.status === "paused" ? undefined : task.pending.shift();
-    if (next !== undefined && turn.status !== "cancelled") {
+    const next = task.status === "paused" || task.status === "cancelled" ? undefined : task.pending.shift();
+    if (next !== undefined) {
       try {
         await this.startTurn(live, next);
         return;
@@ -955,9 +1046,57 @@ export class Forge {
       }
     }
     for (const notify of [...live.waiters]) notify();
+    this.pumpQueue();
   }
 
-  /** Records files the edit tools wrote, and calls that completed twice in one run (replayed after a reconnect). */
+  /** Automatic retries in a row at the end of the task's turns. */
+  private trailingAutoRetries(task: Task): number {
+    let n = 0;
+    for (let i = task.turns.length - 1; i >= 0 && task.turns[i]?.autoRetry; i--) n++;
+    return n;
+  }
+
+  private backoff(live: LiveTask, ms: number): Promise<void> {
+    if (ms <= 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(done, ms);
+      function done() {
+        clearTimeout(timer);
+        live.backoff = undefined;
+        resolve();
+      }
+      live.backoff = done;
+    });
+  }
+
+  private async resumeState(task: Task, turn: Turn): Promise<ResumeState> {
+    const origin = turn.autoRetry ? [...task.turns].reverse().find((t) => !t.autoRetry) : turn;
+    const diffStat = task.baseline.isRepo ? await summarizeChanges(task.cwd, task.baseline).then((c) => c.diffStat, () => "") : "";
+    const recent = task.steps.filter((s) => s.kind === "tool" && s.toolStatus === "completed").slice(-8).map((s) => truncate(s.text, 160));
+    return { touched: task.touched ?? [], diffStat, recent, prompt: origin?.prompt ?? turn.prompt };
+  }
+
+  /** Steers (or queues for the next turn) one reminder to start editing once exploring passes the thresholds. */
+  private async nudgeIfExploring(live: LiveTask, run: WorkerRun, turn: Turn): Promise<void> {
+    const { task } = live;
+    const calls = this.toolCalls(task);
+    const ms = task.activeMs + (Date.now() - Date.parse(turn.startedAt));
+    const { exploreNudgeCalls: maxCalls, exploreNudgeMs: maxMs } = this.config;
+    if (!((maxCalls > 0 && calls >= maxCalls) || (maxMs > 0 && ms >= maxMs))) return;
+    task.nudgedAt = now();
+    const steered = !!run.steer && (await run.steer(EXPLORE_NUDGE).catch(() => false));
+    if (!steered) task.pending.push(EXPLORE_NUDGE);
+    this.addStep(task, {
+      kind: "status",
+      text: `No edits after ${calls} tool calls (${Math.round(ms / 60_000)} min); ${steered ? "told" : "will tell"} the worker to start implementing.`,
+    });
+    this.persist(task);
+  }
+
+  private toolCalls(task: Task): number {
+    return task.steps.filter((s) => s.kind === "tool" && s.toolStatus === "completed").length;
+  }
+
   /** Takes the worker's `ETA:` from the start of its first turn's text; streamed text can split it across messages. */
   private noteEstimate(task: Task, message: SDKMessage, eta: { text: string; open: boolean }): void {
     if (message.type !== "assistant") return;
@@ -969,6 +1108,7 @@ export class Forge {
     } else if (eta.text.length > 400) eta.open = false;
   }
 
+  /** Records files the edit tools wrote, and calls that completed twice in one run (replayed after a reconnect). */
   private noteToolCall(task: Task, message: SDKMessage, completed: Set<string>): void {
     if (message.type !== "tool_call" || message.status !== "completed") return;
     const args = (message.args ?? {}) as { path?: unknown; command?: unknown };
@@ -1007,9 +1147,9 @@ export class Forge {
     if (alreadyRetried && task.status === "error") {
       const turn = task.turns.at(-1);
       if (turn?.retryable ?? isTransientMessage(turn?.error)) {
-        return "The connection keeps dropping: this turn failed again after a retry, often because a proxy/VPN cuts long connections or one turn runs very long. Stop retrying and tell the user; suggest splitting the task into smaller dispatches rather than re-dispatching the same brief.";
+        return "The connection keeps dropping: AgentForge already retried automatically and the last retry failed or made no progress, often because a proxy/VPN cuts long connections or one turn runs very long. Stop retrying and tell the user; suggest splitting the task into smaller dispatches rather than re-dispatching the same brief.";
       }
-      return "This turn already failed and was retried once. Stop retrying and report lastError to the user.";
+      return "This turn already failed and was retried. Stop retrying and report lastError to the user.";
     }
     const exhausted = this.budgetOf(task).exhausted;
     if (exhausted && task.status !== "running" && task.status !== "accepted") {
@@ -1083,14 +1223,19 @@ export class Forge {
 
   private hintFor(task: Task, idleSec: number | undefined, retryable: boolean | undefined): string {
     switch (task.status) {
-      case "running":
       case "queued":
+        if (task.queuedBrief !== undefined) return "Waiting for a free worker slot (AGENTFORGE_MAX_CONCURRENT); it starts when a running task ends. forge_wait blocks until it finishes; forge_cancel drops it.";
+      // falls through
+      case "running":
         if (idleSec !== undefined && idleSec >= this.config.stallWarnSec) {
           const tool = this.currentTool(task);
           if (tool) {
             return `Worker has emitted nothing for ${idleSec}s while its ${tool.tool} call (${truncate(tool.text, 120)}) has run ${tool.runningSec}s. The command may hang or wait for input. Tell the user; forge_followup can tell the worker to stop it, or forge_cancel ends the turn.`;
           }
           return `Worker has emitted nothing for ${idleSec}s. It may be waiting on the model backend or stalled. Tell the user; if it stays silent, forge_cancel then forge_followup to retry on the same agent.`;
+        }
+        if (!task.touched?.length && this.config.exploreNudgeCalls > 0 && this.toolCalls(task) >= this.config.exploreNudgeCalls) {
+          return `Worker is still exploring: ${this.toolCalls(task)} tool calls and no edits yet${task.nudgedAt ? "; AgentForge already told it to start implementing" : ""}. If it stays this way, forge_followup with the exact files and line ranges to change.`;
         }
         return "Worker is busy. Use forge_wait to block until it finishes, or forge_followup to steer it.";
       case "paused":

@@ -53,13 +53,15 @@ describe("worker defaults", () => {
     expect(loadConfig({ AGENTFORGE_HOME: "/new", CLAUDEFORGE_HOME: "/old" }).home).toBe("/new");
   });
 
-  it("reads the automatic retry setting, capped at one", () => {
-    expect(loadConfig({}).autoRetry).toBe(1);
+  it("reads the automatic retry setting, capped at three", () => {
+    expect(loadConfig({}).autoRetry).toBe(3);
+    expect(loadConfig({})).toMatchObject({ slices: true, maxConcurrent: 2, exploreNudgeCalls: 15, exploreNudgeMs: 600_000, briefWarnChars: 4000, autoRetryDelayMs: 5000 });
+    expect(loadConfig({ AGENTFORGE_SLICES: "off", AGENTFORGE_MAX_CONCURRENT: "0" })).toMatchObject({ slices: false, maxConcurrent: 0 });
     expect(loadConfig({})).toMatchObject({ openProgress: "cursor", monitorPort: 18862 });
     expect(loadConfig({ AGENTFORGE_OPEN_PROGRESS: "off", AGENTFORGE_MONITOR_PORT: "0" })).toMatchObject({ openProgress: undefined, monitorPort: 0 });
     expect(loadConfig({ AGENTFORGE_AUTO_RETRY: "0" }).autoRetry).toBe(0);
     expect(loadConfig({ CLAUDEFORGE_AUTO_RETRY: "0" }).autoRetry).toBe(0);
-    expect(loadConfig({ AGENTFORGE_AUTO_RETRY: "3" }).autoRetry).toBe(1);
+    expect(loadConfig({ AGENTFORGE_AUTO_RETRY: "9" }).autoRetry).toBe(3);
   });
 });
 

@@ -76,7 +76,7 @@ function handler(home: string) {
 export const INSTRUCTIONS = [
   "AgentForge hands coding work to a background agent (Cursor by default) and lets you track, steer, and accept it.",
   'Each user message carries a "AgentForge auto-dispatch: ON/OFF" note set from the user\'s board; follow the latest one. When OFF, use these tools only if the user explicitly asks for an agent.',
-  "When dispatching: split work into tasks that touch disjoint files, and pass isolation \"worktree\" when several run in one repo at once; give forge_dispatch a complete brief, acceptance criteria, a narrow verify_command, cwd, and a fresh UUID order_id. To wait, run the returned wait_command as a background shell command (you are notified when it ends) instead of looping forge_wait; forge_status shows progress. Steer with forge_followup, review with forge_result (include_diff for anything non-trivial), accept with forge_accept.",
+  "When dispatching: split work into tasks that touch disjoint files, and pass isolation \"worktree\" when several run in one repo at once; give forge_dispatch a complete brief, acceptance criteria, a narrow verify_command, cwd, and a fresh UUID order_id. Keep each task to one area (about 20-30 minutes of work) and put the anchors you already found in context (file paths with line ranges, signatures, test helpers, an example test) so the agent starts editing quickly. To wait, run the returned wait_command as a background shell command (you are notified when it ends) instead of looping forge_wait; forge_status shows progress. Steer with forge_followup, review with forge_result (include_diff for anything non-trivial), accept with forge_accept.",
   "Status `uncertain` means the driving process stopped mid-turn: check forge_result and the files before doing anything, and never re-dispatch the same change under a new order_id. Never commit or push unless the user asks.",
 ].join("\n");
 
@@ -127,7 +127,10 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
         title: z.string().optional().describe("Short label for listings."),
         acceptance: z.string().optional().describe("Acceptance criteria the worker must satisfy."),
         verify_command: z.string().optional().describe("Shell command run by forge_accept, e.g. `npm test` or `mvn -q -pl X test`."),
-        context: z.string().optional().describe("Extra context from this conversation (decisions, findings, links)."),
+        context: z
+          .string()
+          .optional()
+          .describe("What you already found, so the agent need not rediscover it: file paths with line ranges, signatures to change, test helpers and an example test, decisions and links. Keep task + context under about 4,000 characters."),
         worker: z.string().optional().describe(`Which worker runs the task. Available: ${workers.join(", ")}. Defaults to the executor chosen on the board.`),
         model: z.string().optional().describe("Worker model id. Defaults to the board's model, else the executor's default."),
         model_params: z

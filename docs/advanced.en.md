@@ -77,7 +77,11 @@ Status, wait, result, and cancel take `task_id` or `order_id`. In Claude Code th
 
 Errors from Cursor carry `error_type` and a `retryable` verdict: tool errors in the error text, failed turns in `lastError`. The verdict combines the SDK's `isRetryable` flag, the error class (network or rate limit), and connection-failure messages, because the SDK often reports `isRetryable: false` on plain connection drops. A worker that has not started its run within `AGENTFORGE_START_TIMEOUT_SEC` fails the same way; `forge_retry` keeps waiting on the same agent instead of opening a second one.
 
-A turn that fails with a retryable connection error (for example `Agent turn stopped after repeated resume attempts made no progress`, which the SDK raises when the stream to Cursor keeps dropping) is continued once automatically on the same agent, with an instruction to pick up where it stopped; the task stays `running` meanwhile. If that fails too, `forge_status` says the connection keeps dropping and suggests smaller tasks. `AGENTFORGE_AUTO_RETRY=0` turns this off.
+A turn that fails with a retryable connection error (for example `Agent turn stopped after repeated resume attempts made no progress`, which the SDK raises when the stream to Cursor keeps dropping) is continued automatically on the same agent, up to 3 times with a doubling wait (5s, 10s, 20s). From the second retry on, a retry happens only if the previous one made progress (completed tool calls). The resume prompt lists the files edited so far, `git diff --stat`, and the last completed steps, and tells the worker not to re-read files it already read. The task stays `running` meanwhile. When the retries run out or stop making progress, `forge_status` says the connection keeps dropping and suggests smaller tasks. `AGENTFORGE_AUTO_RETRY=0` turns this off.
+
+Long turns are the ones dropped connections cut off, so tasks run in slices: after each slice (a few files plus their checks) the worker ends its turn with a last line `NEXT: <next slice>`, and AgentForge sends "continue" until the worker ends without `NEXT:` and gives its final report. The task stays `running` throughout and `forge_wait` waits for all slices. `AGENTFORGE_SLICES=off` turns this off.
+
+A worker that keeps reading without editing (by default 15 tool calls or 10 minutes with no edit) is told once to start implementing, and `forge_status` says it is still exploring. At most 2 workers run at once by default; further dispatches wait as `queued` and start when a slot frees up, and `forge_cancel` drops a queued task. A dispatch whose task and context together exceed about 4,000 characters returns a warning suggesting smaller tasks or a referenced document.
 
 When the SDK resumes after a reconnect it can run the last tool calls again. AgentForge spots a call that completes twice, adds a step, and lists it under `replayed` in `forge_result`: a replayed edit may have applied twice. `forge_result` also marks files another task in the same directory edited (`byOtherTask`) and leaves them out of the diff.
 
@@ -103,7 +107,7 @@ A worktree starts from HEAD: uncommitted changes in the original directory are n
 
 ## Budgets and usage
 
-Each task has a turn budget (`max_turns`, default 20) and a worker time budget (`max_minutes`, default 60, counting only time a turn is running). A turn that runs past the time budget is cancelled; once either budget is used up, new turns are refused with a message telling Claude Code to ask you first. `forge_status` and `forge_result` show `budget` as `used/max`.
+Each task has a turn budget (`max_turns`, default 30) and a worker time budget (`max_minutes`, default 60, counting only time a turn is running). A turn that runs past the time budget is cancelled; once either budget is used up, new turns are refused with a message telling Claude Code to ask you first. `forge_status` and `forge_result` show `budget` as `used/max`.
 
 `forge_result` reports token usage summed over the task's turns. When the Cursor account exposes billing, the billed totals (and `chargedUsd`) are used instead.
 
@@ -132,13 +136,19 @@ Settings come from the environment first, then from `AGENTFORGE_ENV_FILE` or `~/
 | `AGENTFORGE_MODEL_PARAMS` | - | Default model parameters, `id=value,...`; the board's effort wins for its parameter |
 | `AGENTFORGE_SETTING_SOURCES` | `project` | Cursor settings layers the worker loads (project rules, AGENTS.md) |
 | `AGENTFORGE_AUTO_REVIEW` | off | `1` enables Cursor Auto-review for tool calls |
-| `AGENTFORGE_MAX_TURNS` | `20` | Turn budget per task |
+| `AGENTFORGE_MAX_TURNS` | `30` | Turn budget per task |
 | `AGENTFORGE_MAX_TASK_MINUTES` | `60` | Worker time budget per task |
 | `AGENTFORGE_MAX_REWORK` | `3` | Automatic rework rounds after a failed verification |
 | `AGENTFORGE_VERIFY_TIMEOUT_SEC` | `900` | Timeout of the verification command |
 | `AGENTFORGE_STALL_WARN_SEC` | `120` | Silence after which `forge_status` hints that the worker may be stalled |
 | `AGENTFORGE_START_TIMEOUT_SEC` | `300` | Limit for creating the agent and for starting each run |
-| `AGENTFORGE_AUTO_RETRY` | `1` | Continue a turn that failed with a connection error once automatically; `0` turns it off |
+| `AGENTFORGE_AUTO_RETRY` | `3` | Automatic continuations of a turn that failed with a connection error (at most 3); `0` turns them off |
+| `AGENTFORGE_AUTO_RETRY_DELAY_SEC` | `5` | Wait before the first automatic retry; doubles for each further one |
+| `AGENTFORGE_SLICES` | `on` | Have workers work in slices and continue them automatically; `off` turns it off |
+| `AGENTFORGE_MAX_CONCURRENT` | `2` | Workers running at once; more wait queued. `0` means no limit |
+| `AGENTFORGE_EXPLORE_NUDGE_CALLS` | `15` | Tool calls without an edit before the worker is told to start editing; `0` turns it off |
+| `AGENTFORGE_EXPLORE_NUDGE_MINUTES` | `10` | Or minutes of work without an edit; `0` turns it off |
+| `AGENTFORGE_BRIEF_WARN_CHARS` | `4000` | Task + context length above which dispatch warns |
 | `AGENTFORGE_OPEN_PROGRESS` | `cursor` | Editor command that opens a task's progress page when it starts; `off` turns it off |
 | `AGENTFORGE_MONITOR_PORT` | `18862` | Port of the read-only monitor page the backend serves; `0` turns it off |
 | `AGENTFORGE_MCP_CONFIG` | `~/.agentforge/mcp.json` | MCP servers workers may use (absolute path) |

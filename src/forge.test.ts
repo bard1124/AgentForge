@@ -65,7 +65,7 @@ class FakeWorker implements Worker {
 
 const base = { agent_id: "agent-1", run_id: "run" };
 const say = (text: string): SDKMessage => ({ type: "assistant", ...base, message: { role: "assistant", content: [{ type: "text", text }] } });
-const tool = (call_id: string, status: "running" | "completed", args: unknown): SDKMessage => ({ type: "tool_call", ...base, call_id, name: "edit", status, args });
+const tool = (call_id: string, status: "running" | "completed", args: unknown, name = "edit"): SDKMessage => ({ type: "tool_call", ...base, call_id, name, status, args });
 
 let home: string;
 let repo: string;
@@ -90,7 +90,7 @@ afterEach(() => {
 });
 
 function makeForge(worker: Worker, overrides: Partial<ReturnType<typeof loadConfig>> = {}) {
-  const config = { ...loadConfig({}), home, mcpConfigPath: path.join(home, "mcp.json"), ...overrides };
+  const config = { ...loadConfig({}), home, mcpConfigPath: path.join(home, "mcp.json"), autoRetryDelayMs: 0, maxConcurrent: 0, ...overrides };
   return new Forge(config, new TaskStore(home), { cursor: worker });
 }
 
@@ -285,7 +285,95 @@ describe("Forge", () => {
     expect(t.turns[0]?.retryable).toBe(true);
     expect(worker.prompts[1]).toMatch(/cut off by a connection error/);
     expect(worker.resumed).toEqual(["agent-1"]);
-    expect(forge.status(task.id).steps.map((s) => s.text)).toContain("Transient connection error; continuing automatically on the same agent (once).");
+    expect(forge.status(task.id).steps.map((s) => s.text)).toContain("Transient connection error; continuing automatically on the same agent (attempt 1 of 3).");
+  });
+
+  it("keeps retrying while retries make progress, and tells the worker what is already done", async () => {
+    let attempts = 0;
+    const worker = new FakeWorker((cwd) => {
+      attempts += 1;
+      fs.appendFileSync(path.join(cwd, "a.txt"), `step ${attempts}\n`);
+      const done = [tool(`c${attempts}`, "running", { path: "a.txt" }), tool(`c${attempts}`, "completed", { path: "a.txt" })];
+      return attempts < 4 ? { messages: done, result: { status: "error", error: DROPPED } } : { messages: [], result: { status: "finished", result: "ok" } };
+    });
+    const forge = makeForge(worker);
+    const { task } = await forge.dispatch({ task: "do it", cwd: repo });
+    await forge.wait(task.id, 5);
+
+    const t = forge.get(task.id);
+    expect(t.status).toBe("finished");
+    expect(t.turns.map((u) => !!u.autoRetry)).toEqual([false, true, true, true]);
+    expect(worker.prompts[1]).toMatch(/Files you edited so far:\n- a\.txt/);
+    expect(worker.prompts[1]).toMatch(/git diff --stat[\s\S]*a\.txt/);
+    expect(worker.prompts[1]).toMatch(/do not re-read files you already read/);
+    expect(worker.prompts[3]).toContain("do it");
+  });
+
+  it("works in slices: continues after NEXT: until the worker reports", async () => {
+    let round = 0;
+    const worker = new FakeWorker(() => {
+      round += 1;
+      return { messages: [], result: { status: "finished", result: round < 3 ? `did part ${round}\nNEXT: part ${round + 1}` : "report" } };
+    });
+    const forge = makeForge(worker);
+    const { task } = await forge.dispatch({ task: "three parts", cwd: repo });
+    expect(worker.prompts[0]).toContain("## Work in slices");
+    expect(await forge.wait(task.id, 5)).toBe(true);
+
+    const t = forge.get(task.id);
+    expect(t.status).toBe("finished");
+    expect(t.turns.map((u) => !!u.autoContinue)).toEqual([false, true, true]);
+    expect(worker.prompts[1]).toMatch(/^Continue with the next slice: part 2/);
+    expect(worker.prompts[2]).toMatch(/part 3/);
+
+    const plain = makeForge(new FakeWorker(() => ({ messages: [], result: { status: "finished", result: "x\nNEXT: y" } })), { slices: false });
+    const other = await plain.dispatch({ task: "one go", cwd: repo });
+    await plain.wait(other.task.id, 5);
+    expect(plain.get(other.task.id).turns).toHaveLength(1);
+  });
+
+  it("warns about long briefs", async () => {
+    const forge = makeForge(new FakeWorker(() => ({ messages: [], result: { status: "finished", result: "ok" } })), { briefWarnChars: 50 });
+    const { warnings } = await forge.dispatch({ task: "x".repeat(40), context: "y".repeat(20), cwd: repo });
+    expect(warnings.join("\n")).toMatch(/The brief is 60 characters.*split the work/);
+  });
+
+  it("queues dispatches beyond the concurrency limit and starts them as slots free up", async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    const worker = new FakeWorker((_cwd, prompt) => ({ messages: [], result: { status: "finished", result: "ok" }, holdUntil: prompt.includes("first") ? hold : undefined }));
+    const forge = makeForge(worker, { maxConcurrent: 1 });
+    const first = await forge.dispatch({ task: "first", cwd: repo });
+    const second = await forge.dispatch({ task: "second", cwd: repo });
+    const third = await forge.dispatch({ task: "third", cwd: repo });
+    expect(second.warnings.join()).toMatch(/Queued behind 1 running task/);
+    expect(forge.get(second.task.id).status).toBe("queued");
+    expect(forge.status(second.task.id).hint).toMatch(/free worker slot/);
+    expect(worker.prompts).toHaveLength(1);
+
+    await forge.cancel(third.task.id);
+    expect(forge.get(third.task.id).status).toBe("cancelled");
+    release();
+    await forge.wait(first.task.id, 5);
+    await forge.wait(second.task.id, 5);
+    expect(forge.get(second.task.id).status).toBe("finished");
+    expect(worker.prompts).toHaveLength(2);
+  });
+
+  it("nudges a worker that explores without editing, once", async () => {
+    const reads = Array.from({ length: 4 }, (_, i) => [tool(`r${i}`, "running", { path: "a.txt" }, "read"), tool(`r${i}`, "completed", { path: "a.txt" }, "read")]).flat();
+    let round = 0;
+    const worker = new FakeWorker(() => {
+      round += 1;
+      return { messages: round === 1 ? reads : [], result: { status: "finished", result: "ok" } };
+    });
+    const forge = makeForge(worker, { exploreNudgeCalls: 3 });
+    const { task } = await forge.dispatch({ task: "explore", cwd: repo });
+    await forge.wait(task.id, 5);
+
+    expect(worker.prompts[1]).toMatch(/Start implementing now/);
+    expect(worker.prompts).toHaveLength(2);
+    expect(forge.status(task.id).steps.map((s) => s.text).join("\n")).toMatch(/No edits after 3 tool calls/);
   });
 
   it("stops after a failed automatic retry and tells the supervisor the connection keeps dropping", async () => {

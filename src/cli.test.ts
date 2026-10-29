@@ -37,7 +37,7 @@ describe("agentforge run / watch (echo plugin, built dist)", () => {
     expect(out).toMatch(/tool\s+\+ echo add a README/);
     expect(out).not.toMatch(/not a git repository/);
     expect(out).toMatch(/Echo: add a README/);
-    expect(out).toMatch(/budget turns=1\/20/);
+    expect(out).toMatch(/budget turns=1\/30/);
     expect(out).toMatch(/tokens in=\d+/);
   });
 

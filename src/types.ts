@@ -44,6 +44,8 @@ export interface Turn {
   retryable?: boolean;
   /** Started by Forge to continue after a transient failure, with a continuation prompt. */
   autoRetry?: boolean;
+  /** Started by Forge to carry on with the slice the worker named after `NEXT:`. */
+  autoContinue?: boolean;
   durationMs?: number;
   usage?: TokenUsage;
 }
@@ -122,6 +124,10 @@ export interface Task {
   touched?: string[];
   /** Tool calls the worker ran again after a reconnect; a replayed edit may have applied twice. */
   replayed?: { at: string; tool: string; target: string }[];
+  /** First prompt of a task waiting for a free worker slot; cleared once it starts. */
+  queuedBrief?: string;
+  /** When Forge told the worker to stop exploring and start editing. */
+  nudgedAt?: string;
 }
 
 export interface ChangeSummary {
