@@ -34,6 +34,14 @@ describe("renderProgress", () => {
     expect(md).toContain("- `src/a.ts`");
     expect(md.indexOf("edit src/a.ts")).toBeLessThan(md.indexOf("read src/a.ts"));
     expect(md).not.toContain("## Worker report");
+    expect(md).not.toContain("| Estimate |");
+  });
+
+  it("shows the estimate with its source and the worker time so far", () => {
+    const md = renderProgress(task({ estimate: { ms: 15 * 60_000, source: "worker", at: "" }, activeMs: 0 }), Date.parse("2026-10-27T01:06:00.000Z"));
+    expect(md).toContain("| Estimate | 15m 0s (worker's ETA); worker time so far 6m 0s |");
+    const history = renderProgress(task({ estimate: { ms: 10 * 60_000, source: "history", at: "", basis: "default" }, activeMs: 0 }), Date.parse("2026-10-27T01:01:00.000Z"));
+    expect(history).toContain("| Estimate | 10m 0s (default);");
   });
 
   it("adds the error and the worker report once the turn ended", () => {

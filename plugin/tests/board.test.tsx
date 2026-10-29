@@ -1,6 +1,7 @@
 import { expect, test } from "claude-code/testing";
 import type { Engine } from "claude-code/testing";
 import type { On } from "claude-code";
+import type { TaskRow } from "../types/index";
 
 const PANE = {
   plugin: "agentforge",
@@ -15,7 +16,7 @@ const P1 = "11111111-1111-4111-8111-111111111111";
 const T1 = "22222222-2222-4222-8222-222222222222";
 
 type Call = { method: string; path: string; search?: string; body?: Record<string, unknown> };
-type Row = { id: string; title: string; status: string; orderStatus: string; worker: string; model: string; updatedAt: string };
+type Row = TaskRow;
 
 const ORDER_OF: Record<string, string> = { running: "executing", paused: "paused", finished: "completed", cancelled: "cancelled" };
 const taskRow = (id: string, title: string, status: string): Row => ({ id, title, status, orderStatus: ORDER_OF[status] ?? status, worker: "cursor", model: "composer-2.5", updatedAt: "" });
@@ -312,6 +313,25 @@ test("the task card shows 8 rows at a time and pages with ▲ / ▼", async ($, 
 
   await ui.press({ key: "tasks-up" });
   expect(await ui.find({ type: "Text", text: /^9–16 \/ 20$/ })).toBeDefined();
+  await ui.unmount();
+});
+
+test("task rows show the estimate with elapsed or actual time, warning once a running task is past it", async ($, on) => {
+  const MIN = 60_000;
+  backend(on, {
+    tasks: [
+      { ...taskRow("a", "On time", "running"), estimateMs: 15 * MIN, estimateSource: "worker", elapsedMs: 6 * MIN },
+      { ...taskRow("b", "Late", "running"), estimateMs: 10 * MIN, estimateSource: "history", elapsedMs: 75 * MIN },
+      { ...taskRow("c", "Done", "finished"), estimateMs: 15 * MIN, estimateSource: "worker", elapsedMs: 22 * MIN },
+      taskRow("d", "Before estimates", "finished"),
+    ],
+  });
+  await openBoard($);
+  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
+  expect((await ui.find({ type: "Text", text: "· est ~15m · 6m elapsed" }))?.props.color).toBeUndefined();
+  expect((await ui.find({ type: "Text", text: "· est ~10m · 1h 15m elapsed" }))?.props.color).toBe("warning");
+  expect(await ui.find({ type: "Text", text: "· est 15m · took 22m" })).toBeDefined();
+  expect(await ui.findAll({ type: "Text", text: /^· est / })).toHaveLength(3);
   await ui.unmount();
 });
 

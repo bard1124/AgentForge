@@ -136,7 +136,7 @@ agentforge config set executor=cursor model=gpt-5.5 effort=high permission=sandb
 | 验收 | 「给我看 diff，测试通过就验收。」 |
 | 停止 | 「取消刚才的任务，确认 agent 已经停下。」 |
 
-关闭自动派工、关闭看板或关闭 Claude Code 会话，都不会取消已经在执行的任务；需要停止时明确要求取消，或在看板的任务卡片上操作：运行中的任务可 **Pause**（暂停，保留 agent，状态为 `paused`）或 **Cancel**，暂停的任务可 **Resume** 在同一个 agent 上继续，已结束的任务可 **Delete**，**Clear finished** 一次删除所有已结束的任务（删除需确认）。卡片每次显示 8 个任务，用 ▲ / ▼ 翻页。看板隐藏时暂停刷新，任务在后台继续执行。
+关闭自动派工、关闭看板或关闭 Claude Code 会话，都不会取消已经在执行的任务；需要停止时明确要求取消，或在看板的任务卡片上操作：运行中的任务可 **Pause**（暂停，保留 agent，状态为 `paused`）或 **Cancel**，暂停的任务可 **Resume** 在同一个 agent 上继续，已结束的任务可 **Delete**，**Clear finished** 一次删除所有已结束的任务（删除需确认）。卡片每次显示 8 个任务，用 ▲ / ▼ 翻页；每行显示预计耗时，运行中为「est ~15m · 6m elapsed」（超过预计变黄），结束后为「est 15m · took 22m」。看板隐藏时暂停刷新，任务在后台继续执行。
 
 ### 轻量 SDD 任务文档
 

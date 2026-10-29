@@ -537,6 +537,25 @@ function taskControls($: EngineInterface, c: Ctx, m: BoardModel, t: TaskRow) {
   return null;
 }
 
+const duration = (ms: number) => {
+  const m = Math.max(1, Math.round(ms / 60_000));
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""}`;
+};
+
+/** `est ~15m · 6m elapsed` while active, `est 15m · took 22m` once done; a warning once past the estimate. */
+function estimateLine(c: Ctx, t: TaskRow) {
+  if (t.estimateMs === undefined) return null;
+  const { Text } = c.E;
+  const active = t.status === "running" || t.status === "queued" || t.status === "paused";
+  const elapsed = t.elapsedMs ?? 0;
+  const text = active ? `· est ~${duration(t.estimateMs)} · ${duration(elapsed)} elapsed` : `· est ${duration(t.estimateMs)} · took ${duration(elapsed)}`;
+  return active && elapsed > t.estimateMs ? (
+    <Text size="footnote" color="warning" wrap="truncate-end">{text}</Text>
+  ) : (
+    <Text size="footnote" dimColor wrap="truncate-end">{text}</Text>
+  );
+}
+
 /** The task card; `controls` is off on mobile, which stays text only. */
 function tasksSection($: EngineInterface, c: Ctx, m: BoardModel, controls: boolean) {
   const { E } = c;
@@ -549,7 +568,10 @@ function tasksSection($: EngineInterface, c: Ctx, m: BoardModel, controls: boole
         row(
           c,
           <Text weight="medium" wrap="truncate-end">{t.title}</Text>,
-          <Text size="footnote" dimColor mono wrap="truncate-end">{`${t.id}${t.updatedAt ? ` · ${stamp(t.updatedAt)}` : ""}`}</Text>,
+          <Box flexDirection="row" columnGap="xs" alignItems="center" flexShrink={1}>
+            <Text size="footnote" dimColor mono wrap="truncate-end">{`${t.id}${t.updatedAt ? ` · ${stamp(t.updatedAt)}` : ""}`}</Text>
+            {estimateLine(c, t)}
+          </Box>,
           <Box flexDirection="row" columnGap="xs" alignItems="center">
             <Text size="footnote" color={STATUS_COLOR[t.orderStatus] ?? "inactive"}>●</Text>
             <Text size="footnote" color={STATUS_COLOR[t.orderStatus] ?? "inactive"}>{t.orderStatus}</Text>

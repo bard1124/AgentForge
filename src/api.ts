@@ -12,6 +12,7 @@ import {
   readDelegation,
   writeDelegation,
 } from "./delegation.js";
+import { elapsedMs } from "./estimate.js";
 import { type Forge, ForgeError, orderStatus } from "./forge.js";
 import { savingsSummary } from "./savings.js";
 import { SddError, SddStore } from "./sdd.js";
@@ -178,6 +179,10 @@ route("GET", "/api/tasks", (ctx, _body, url) => {
       cwd: t.cwd,
       turns: t.turns.length,
       updatedAt: t.updatedAt,
+      estimateMs: t.estimate?.ms,
+      estimateSource: t.estimate?.source,
+      estimateBasis: t.estimate?.basis,
+      elapsedMs: elapsedMs(t),
     }));
 });
 

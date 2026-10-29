@@ -49,6 +49,7 @@ export function buildBrief(input: BriefInput): string {
   sections.push(
     [
       "## Rules",
+      "- After a quick look at the code, start your first message with `ETA: <minutes>m`, your estimate of the time the task will take.",
       `- Work only inside \`${input.cwd}\`.`,
       "- Do not commit, push, or switch branches unless the task explicitly says so.",
       "- In large files, locate code with grep/rg first and read only the line ranges you need; do not re-read a file you already read unless it changed.",

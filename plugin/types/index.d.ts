@@ -24,7 +24,20 @@ export type ExecutorRuntime = {
   error?: string;
 };
 
-export type TaskRow = { id: string; title: string; status: string; orderStatus: string; worker: string; model: string; updatedAt: string };
+export type TaskRow = {
+  id: string;
+  title: string;
+  status: string;
+  orderStatus: string;
+  worker: string;
+  model: string;
+  updatedAt: string;
+  estimateMs?: number;
+  estimateSource?: "history" | "worker";
+  estimateBasis?: string;
+  /** Worker running time, the running turn included. */
+  elapsedMs?: number;
+};
 
 export type UpdateView = {
   state: string;

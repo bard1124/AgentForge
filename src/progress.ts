@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { elapsedMs } from "./estimate.js";
 import { orderStatus } from "./forge.js";
 import type { Task } from "./types.js";
 
@@ -41,6 +42,9 @@ export function renderProgress(task: Task, now = Date.now()): string {
     `| Executor | ${task.worker} · ${task.model} |`,
     `| Turns | ${task.turns.length} |`,
     `| Elapsed | ${duration(end - Date.parse(task.createdAt))} |`,
+    ...(task.estimate
+      ? [`| Estimate | ${duration(task.estimate.ms)} (${task.estimate.source === "worker" ? "worker's ETA" : (task.estimate.basis ?? "history")}); worker time so far ${duration(elapsedMs(task, now))} |`]
+      : []),
     `| Updated | ${clock(task.updatedAt)} |`,
   ];
   if (turn?.error) lines.push("", `> **Error:** ${oneLine(turn.error, 400)}`);

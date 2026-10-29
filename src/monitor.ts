@@ -27,6 +27,7 @@ export interface MonitorTask {
   elapsedMs: number;
   turns: number;
   latest: string;
+  estimateMs?: number;
   /** Active, but no backend answers: its real state is unknown until one does. */
   stale: boolean;
 }
@@ -116,6 +117,7 @@ export async function monitorSnapshot(home: string, { limit = 30, now = Date.now
       elapsedMs: Math.max(0, end - start),
       turns: task.turns.length,
       latest: latestLine(task),
+      estimateMs: task.estimate?.ms,
       stale: ACTIVE.has(status) && !backend.online,
     };
   });

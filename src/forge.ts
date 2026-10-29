@@ -8,6 +8,7 @@ import { isRetryableError, isTransientMessage } from "./errors.js";
 import { StepRecorder, truncate } from "./events.js";
 import { addWorktree, applyPatch, captureBaseline, diffFor, removeWorktree, summarizeChanges, worktreePatch } from "./git.js";
 import { loadMcpServers, McpConfigError, pickMcpServers } from "./mcp-config.js";
+import { historyEstimate, parseWorkerEstimate } from "./estimate.js";
 import { buildBrief, buildReworkPrompt, readProjectNotes } from "./prompts.js";
 import { TaskStore } from "./store.js";
 import { type ChangeSummary, type OrderStatus, type Step, type Task, type Turn, type Verification } from "./types.js";
@@ -362,6 +363,14 @@ export class Forge {
     if (!baseline.isRepo) warnings.push("cwd is not a git repository; change tracking is unavailable.");
     else if (baseline.dirty.length) warnings.push(`Working tree already had ${baseline.dirty.length} modified file(s); they are flagged as preExisting in results.`);
 
+    const note = worktree
+      ? `You work in a git worktree of ${cwd} at ${workdir}, made for this task; edit files here only, not in ${cwd}. Ignored files (node_modules, build output) are not present; install or build here if you need them. Do not commit.`
+      : undefined;
+    const context = [input.context, note].filter(Boolean).join("\n\n") || undefined;
+    const notes = readProjectNotes(cwd, this.config.home);
+    if (notes) warnings.push(`Project notes added to the brief from ${notes.files.join(", ")}.`);
+    const brief = buildBrief({ task: input.task, cwd: workdir, acceptance: input.acceptance, verifyCommand: input.verifyCommand, context, projectNotes: notes?.text });
+
     const task: Task = {
       id,
       orderId: input.orderId,
@@ -391,18 +400,12 @@ export class Forge {
       maxTurns: input.maxTurns ?? this.config.maxTurns,
       maxTaskMs: input.maxMinutes !== undefined ? input.maxMinutes * 60_000 : this.config.maxTaskMs,
       activeMs: 0,
+      estimate: historyEstimate(this.list(), { cwd, model, brief }),
     };
     this.store.save(task);
     const live: LiveTask = { task, waiters: new Set() };
     this.live.set(task.id, live);
 
-    const note = worktree
-      ? `You work in a git worktree of ${cwd} at ${workdir}, made for this task; edit files here only, not in ${cwd}. Ignored files (node_modules, build output) are not present; install or build here if you need them. Do not commit.`
-      : undefined;
-    const context = [input.context, note].filter(Boolean).join("\n\n") || undefined;
-    const notes = readProjectNotes(cwd, this.config.home);
-    if (notes) warnings.push(`Project notes added to the brief from ${notes.files.join(", ")}.`);
-    const brief = buildBrief({ task: input.task, cwd: workdir, acceptance: input.acceptance, verifyCommand: input.verifyCommand, context, projectNotes: notes?.text });
     try {
       await this.startTurn(live, brief);
     } catch (err) {
@@ -883,12 +886,14 @@ export class Forge {
       void run.cancel().catch(() => undefined);
     }, Math.max(0, task.maxTaskMs - task.activeMs));
     const completed = new Set<string>();
+    const eta = { text: "", open: turn.index === 1 && task.estimate?.source !== "worker" };
     try {
       for await (const message of run.messages()) {
         this.store.appendEvent(task.id, message);
         task.lastEventAt = now();
         recorder.record(message);
         this.noteToolCall(task, message, completed);
+        if (eta.open) this.noteEstimate(task, message, eta);
         if (Date.now() - lastSave > 1000) {
           lastSave = Date.now();
           this.persist(task);
@@ -953,6 +958,17 @@ export class Forge {
   }
 
   /** Records files the edit tools wrote, and calls that completed twice in one run (replayed after a reconnect). */
+  /** Takes the worker's `ETA:` from the start of its first turn's text; streamed text can split it across messages. */
+  private noteEstimate(task: Task, message: SDKMessage, eta: { text: string; open: boolean }): void {
+    if (message.type !== "assistant") return;
+    for (const part of message.message.content) if (part.type === "text") eta.text += part.text;
+    const ms = parseWorkerEstimate(eta.text);
+    if (ms !== undefined) {
+      task.estimate = { ms, source: "worker", at: now() };
+      eta.open = false;
+    } else if (eta.text.length > 400) eta.open = false;
+  }
+
   private noteToolCall(task: Task, message: SDKMessage, completed: Set<string>): void {
     if (message.type !== "tool_call" || message.status !== "completed") return;
     const args = (message.args ?? {}) as { path?: unknown; command?: unknown };

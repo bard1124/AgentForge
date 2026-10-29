@@ -31,7 +31,7 @@ agentforge serve（轻量 stdio 转发）──── HTTP ────► agent
 | 思考强度 | 只显示目录为该固定模型提供的强度；否则跟随模型默认，不虚构选项。 |
 | 新会话权限 | 执行端支持时显示（Cursor：sandbox、auto-review 或两者）。只在为任务新建 agent 时应用一次，追问沿用；执行端无法应用时拒绝派工。 |
 | SDD 文档 | 任务文档的独立开关、工作区和编辑器。 |
-| 任务 | 最近 100 个任务，每次显示 8 行，用 ▲ / ▼ 翻页，旁边显示位置（如 `9–16 / 40`）和运行中的数量。运行中的任务可 **Pause**（停止当前轮次但保留 agent，状态变为 `paused`）或 **Cancel**（结束任务）；暂停的任务可 **Resume**（在同一个 agent 上重发被停下的那一轮）或 **Cancel**；其余任务可 **Delete**（删除任务记录和事件日志）。**Clear finished** 删除所有既不在运行也未暂停的任务。删除都需要再点 Confirm 确认。移动端只显示文字。 |
+| 任务 | 最近 100 个任务，每次显示 8 行，每行带预计耗时（见下文「预计耗时」），用 ▲ / ▼ 翻页，旁边显示位置（如 `9–16 / 40`）和运行中的数量。运行中的任务可 **Pause**（停止当前轮次但保留 agent，状态变为 `paused`）或 **Cancel**（结束任务）；暂停的任务可 **Resume**（在同一个 agent 上重发被停下的那一轮）或 **Cancel**；其余任务可 **Delete**（删除任务记录和事件日志）。**Clear finished** 删除所有既不在运行也未暂停的任务。删除都需要再点 Confirm 确认。移动端只显示文字。 |
 | Plugin update | 折叠区，见[更新与卸载](#更新与卸载)。 |
 
 开关从下一条消息生效：Hook 在每条消息前加一行 ON/OFF 说明，是否派工仍由 Claude Code 按任务判断。看板隐藏时暂停轮询；Claude Code 移动端只显示文字。除 Dispatch 外的各区可用标题后的 ⏷ / ⏵ 折叠为一行摘要；折叠列表存为 `delegation.json` 的 `board.collapsed`，所有会话共用，不算作会让 Hook 状态变为 Pending 的设置变更。
@@ -86,6 +86,10 @@ SDK 断线恢复时可能把最后几个工具调用再执行一遍。AgentForge
 `forge_dispatch` 接收 `order_id`：每项工作一个新 UUID。用相同 `order_id` 和参数重试会返回已有任务（`reused: true`），不会启动第二个 agent；相同 id 但参数不同会被拒绝。
 
 每个任务都有 `order_status`：`queued`、`dispatching`、`executing`、`paused`（在看板上被暂停，不计入运行中、不阻止重启后台，重启后仍为暂停；Claude Code 不应重新派发，从看板恢复）、`completed`、`failed`、`blocked`（预算用完）、`cancelled` 或 `uncertain`。`uncertain` 表示轮次中途被打断（例如后台在运行中停止）：先检查 agent 会话和实际文件，再用原 `order_id` 查询，不要新建任务。`conversation_id` 是 Cursor agent 的 id，与 order id 不同。
+
+## 预计耗时
+
+派工时先按本机历史估算：取已完成任务的 worker 运行时间中位数，优先同一仓库且同一模型，其次同一仓库，再次全部任务，至少 3 个样本，否则默认 10 分钟；再按派工说明的长度相对样本缩放（0.5～2 倍）。派工说明要求 worker 看过代码后在第一条消息开头写 `ETA: <分钟>m`，第一轮里第一次出现时替换历史估算，之后的追问和返工不再改动。看板的 Recent tasks、进度页和监控页都会显示；时间按 worker 实际运行时间计算，不含排队和验收。
 
 ## 项目级 worker 说明
 

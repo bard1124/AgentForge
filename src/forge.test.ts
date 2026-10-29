@@ -99,6 +99,24 @@ const readText = (file: string) => fs.readFileSync(file, "utf8").replaceAll("\r\
 const usage = (total: number) => ({ inputTokens: total - 10, outputTokens: 10, cacheReadTokens: 5, cacheWriteTokens: 0, totalTokens: total });
 
 describe("Forge", () => {
+  it("estimates from history at dispatch, then takes the worker's first-turn ETA once", async () => {
+    let round = 0;
+    const worker = new FakeWorker(() => {
+      round += 1;
+      return { messages: round === 1 ? [say("ETA: "), say("7m\nLooking at the code")] : [say("ETA: 30m")], result: { status: "finished", result: "done" } };
+    });
+    const forge = makeForge(worker);
+    const { task } = await forge.dispatch({ task: "add a field", cwd: repo });
+    expect(forge.get(task.id).estimate).toMatchObject({ ms: 10 * 60_000, source: "history", basis: "default" });
+    expect(worker.prompts[0]).toContain("ETA: <minutes>m");
+
+    await forge.wait(task.id, 5);
+    expect(forge.get(task.id).estimate).toMatchObject({ ms: 7 * 60_000, source: "worker" });
+    await forge.followup(task.id, "one more thing");
+    await forge.wait(task.id, 5);
+    expect(forge.get(task.id).estimate).toMatchObject({ ms: 7 * 60_000, source: "worker" });
+  });
+
   it("dispatches, records steps, reports changes, and accepts after one rework round", async () => {
     let round = 0;
     const worker = new FakeWorker((cwd) => {

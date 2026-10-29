@@ -103,6 +103,8 @@ export interface Task {
   maxTaskMs: number;
   /** Worker running time summed over finished turns. */
   activeMs: number;
+  /** Expected active time: from task history at dispatch, replaced once by the worker's own `ETA:` in its first turn. */
+  estimate?: { ms: number; source: "history" | "worker"; at: string; basis?: string };
   /** Set when the task runs in its own git worktree; `cwd` points inside it until the changes are applied back. */
   worktree?: {
     /** The directory the task was dispatched for. */

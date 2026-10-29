@@ -31,7 +31,7 @@ Every Claude Code session and the board talk to one shared background process, s
 | Thinking effort | Only the efforts the catalog lists for the fixed model; otherwise the model default. Nothing is invented. |
 | New-session permission | Shown when the executor supports it (Cursor: sandbox, auto-review, both). Applies once, when a new agent is created for a task; follow-ups keep it. A permission the executor cannot apply blocks the dispatch. |
 | SDD documents | Separate switch, workspace, and editor for task documents. |
-| Tasks | The 100 most recent tasks, 8 rows at a time with ▲ / ▼ to page, the position (such as `9–16 / 40`) and how many are running. A running task offers **Pause** (stops the turn but keeps the agent; the task becomes `paused`) and **Cancel** (ends it); a paused task offers **Resume** (re-sends the stopped turn on the same agent) and **Cancel**; any other task offers **Delete** (removes its record and event log). **Clear finished** deletes every task that is neither running nor paused. Deletes ask for Confirm first. Text only on mobile. |
+| Tasks | The 100 most recent tasks, each with its estimate (see Estimates below), 8 rows at a time with ▲ / ▼ to page, the position (such as `9–16 / 40`) and how many are running. A running task offers **Pause** (stops the turn but keeps the agent; the task becomes `paused`) and **Cancel** (ends it); a paused task offers **Resume** (re-sends the stopped turn on the same agent) and **Cancel**; any other task offers **Delete** (removes its record and event log). **Clear finished** deletes every task that is neither running nor paused. Deletes ask for Confirm first. Text only on mobile. |
 | Plugin update | Collapsed section; see [Updates and uninstall](#updates-and-uninstall). |
 
 The switch takes effect from the next message: the hook adds a one-line ON/OFF note to each prompt, and Claude Code still decides per task whether delegating fits. The board pauses polling while hidden; on Claude Code mobile it is text only. Every section but Dispatch collapses with the ⏷ / ⏵ after its title to a one-line summary; the collapsed list is stored as `board.collapsed` in `delegation.json`, shared by all sessions, and does not count as a settings change for the hook state.
@@ -86,6 +86,10 @@ When the SDK resumes after a reconnect it can run the last tool calls again. Age
 `forge_dispatch` takes an `order_id`: a fresh UUID per piece of work. Retrying with the same `order_id` and arguments returns the existing task (`reused: true`) instead of starting a second agent; the same id with different arguments is refused.
 
 Each task has an `order_status`: `queued`, `dispatching`, `executing`, `paused` (paused on the board: not counted as running, does not block a backend restart, stays paused across one; Claude Code should not re-dispatch it, resume it from the board), `completed`, `failed`, `blocked` (a budget ran out), `cancelled`, or `uncertain`. `uncertain` means the turn was cut off (for example the backend stopped mid-run): check the agent's conversation and the files before doing anything, and look the task up by its original `order_id` rather than creating a new one. `conversation_id` is the Cursor agent id, different from the order id.
+
+## Estimates
+
+At dispatch a task is estimated from local history: the median worker running time of finished tasks, preferring the same repository and model, then the same repository, then all tasks, with at least 3 samples (else 10 minutes), scaled by the brief's length next to theirs (0.5 to 2 times). The brief asks the worker to start its first message with `ETA: <minutes>m` after a look at the code; the first one in the first turn replaces the history estimate, and follow-ups or rework do not change it. Recent tasks on the board, the progress page and the monitor show it; the time counted is the worker's running time, without queueing or verification.
 
 ## Project worker notes
 
