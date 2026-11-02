@@ -91,7 +91,7 @@ export class Updater {
 
   /** The checkout's current commit, or undefined when git cannot tell. */
   async head(): Promise<string | undefined> {
-    return this.git(["rev-parse", "--short", "HEAD"]).catch(() => undefined);
+    return this.git(["rev-parse", "--short", "HEAD"], 5000).catch(() => undefined);
   }
 
   /** The cached state only; never touches the network. */

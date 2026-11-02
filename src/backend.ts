@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -41,6 +41,27 @@ export function isAlive(pid: number | undefined): boolean {
     return true;
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Whether a live pid is an AgentForge backend; after a reboot a stale lock's pid may belong to anything. */
+export function isBackendProcess(pid: number): boolean {
+  if (process.platform === "win32") return true;
+  try {
+    const command = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", timeout: 2000 });
+    return new RegExp(`${BACKEND_TITLE}|cli\\.js\\s+backend`).test(command);
+  } catch {
+    return true;
+  }
+}
+
+/** The last lines the backend wrote to its log since `from`, for start errors shown far from the log. */
+function logTail(file: string, from: number, lines = 5): string {
+  try {
+    const text = fs.readFileSync(file, "utf8").slice(from);
+    return text.split("\n").map((l) => l.trim()).filter(Boolean).slice(-lines).join("\n");
+  } catch {
+    return "";
   }
 }
 
@@ -91,6 +112,7 @@ export async function ensureBackend(home: string, waitMs = 20_000): Promise<{ in
   let info = await probe(home);
   if (!info) {
     fs.mkdirSync(home, { recursive: true });
+    const logStart = fs.existsSync(files(home).log) ? fs.statSync(files(home).log).size : 0;
     const log = fs.openSync(files(home).log, "a");
     const child = spawn(process.execPath, [path.join(packageRoot(), "dist", "cli.js"), "backend", "run"], {
       cwd: home,
@@ -103,7 +125,10 @@ export async function ensureBackend(home: string, waitMs = 20_000): Promise<{ in
     fs.closeSync(log);
     const deadline = Date.now() + waitMs;
     while (!(info = await probe(home)) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
-    if (!info) throw new Error(`AgentForge backend did not start within ${waitMs / 1000}s; see ${files(home).log}`);
+    if (!info) {
+      const tail = logTail(files(home).log, logStart);
+      throw new Error(`AgentForge backend did not start within ${waitMs / 1000}s; see ${files(home).log}${tail ? `\n${tail}` : ""}`);
+    }
   }
   const token = readToken(home);
   if (!token) throw new Error(`AgentForge backend token missing at ${files(home).token}`);
@@ -149,7 +174,7 @@ function acquireLock(home: string): boolean {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       const owner = Number.parseInt(fs.readFileSync(file, "utf8"), 10);
-      if (isAlive(owner) && owner !== process.pid) return false;
+      if (isAlive(owner) && owner !== process.pid && isBackendProcess(owner)) return false;
       fs.rmSync(file, { force: true });
     }
   }
@@ -233,8 +258,9 @@ export async function runBackend(config: ForgeConfig): Promise<void> {
     setTimeout(() => void shutdown(), 200);
   };
   const stop = () => void setTimeout(() => void shutdown(), 100);
-  const commit = await updater.head();
-  const ctx: ApiContext = { config, forge, store, updater, version, commit, startedAt, sessions: () => sessions.size, restart, stop };
+  const ctx: ApiContext = { config, forge, store, updater, version, startedAt, sessions: () => sessions.size, restart, stop };
+  // Off the start path: a slow or missing git must not keep the backend from answering.
+  void updater.head().then((commit) => (ctx.commit = commit));
 
   const server = http.createServer(async (req, res) => {
     try {

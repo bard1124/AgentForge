@@ -3,12 +3,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { isBackendProcess } from "./backend.js";
 
 const cli = path.resolve("dist/cli.js");
 let home: string;
 
 beforeAll(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), "cf-proxy-"));
+  // A lock left by a backend that died before a reboot, its pid now reused by an unrelated live process.
+  if (process.platform !== "win32") fs.writeFileSync(path.join(home, "backend.lock"), String(process.pid));
 });
 afterAll(() => {
   try {
@@ -17,6 +20,12 @@ afterAll(() => {
     // already stopped
   }
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+describe("backend lock", () => {
+  it.skipIf(process.platform === "win32")("tells a backend from an unrelated process that reuses its pid", () => {
+    expect(isBackendProcess(process.pid)).toBe(false);
+  });
 });
 
 describe("stdio relay", () => {
