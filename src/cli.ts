@@ -29,6 +29,8 @@ Usage:
   agentforge logout
   agentforge whoami                Show Cursor auth status
   agentforge models                List Cursor models and their parameters
+  agentforge doctor [--model <id>] [--timeout <sec>]
+                                    Check backend, auth and proxy settings, and time a tiny probe turn (exit 0 ok, 2 slow, 1 failed)
   agentforge install [--scope user|project|local] [--worker <name>] [--claude <path>]
                                     Install the plugin (MCP tools, prompt hook, board, /forge) into Claude Code
   agentforge on | off              Turn auto-dispatch on or off (same switch as the board; next message)
@@ -408,6 +410,11 @@ async function main(): Promise<number> {
       if (config.apiKey) out("Using CURSOR_API_KEY from environment.");
       out(JSON.stringify(await Cursor.auth.status(), null, 2));
       return 0;
+    }
+    case "doctor": {
+      const [{ doctor }, { loadWorkers }] = await Promise.all([import("./doctor.js"), import("./workers/registry.js")]);
+      const timeout = flag(args, "--timeout");
+      return doctor(config, await loadWorkers(config), { model: flag(args, "--model"), timeoutMs: timeout === undefined ? undefined : Number(timeout) * 1000 }, out);
     }
     case "models": {
       for (const m of await Cursor.models.list({ apiKey: config.apiKey })) {

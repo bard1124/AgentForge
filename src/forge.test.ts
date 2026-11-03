@@ -332,6 +332,42 @@ describe("Forge", () => {
     expect(plain.get(other.task.id).turns).toHaveLength(1);
   });
 
+  it("restarts a turn that goes silent with no tool call running, and resumes it", async () => {
+    let round = 0;
+    const worker = new FakeWorker(() => {
+      round += 1;
+      return round === 1 ? { messages: [], result: { status: "finished", result: "never" }, holdUntil: new Promise<void>(() => undefined) } : { messages: [], result: { status: "finished", result: "ok" } };
+    });
+    const forge = makeForge(worker, { stallRecoverMs: 150 });
+    const { task } = await forge.dispatch({ task: "do it", cwd: repo });
+    await forge.wait(task.id, 5);
+
+    const t = forge.get(task.id);
+    expect(t.status).toBe("finished");
+    expect(t.turns[0]).toMatchObject({ status: "error", retryable: true });
+    expect(t.turns[0]?.error).toMatch(/went silent for \d+s with no tool call running/);
+    expect(t.turns[1]?.autoRetry).toBe(true);
+    expect(worker.prompts[1]).toMatch(/cut off by a connection error/);
+  });
+
+  it("does not restart a silent turn while a tool call runs", async () => {
+    const worker = new FakeWorker(() => ({
+      messages: [tool("b1", "running", { command: "mvn install" }, "shell")],
+      result: { status: "finished", result: "built" },
+      holdUntil: new Promise<void>((r) => setTimeout(r, 600)),
+    }));
+    const forge = makeForge(worker, { stallRecoverMs: 150 });
+    const { task } = await forge.dispatch({ task: "build", cwd: repo });
+    await forge.wait(task.id, 5);
+    expect(forge.get(task.id).turns.map((u) => u.status)).toEqual(["finished"]);
+  });
+
+  it("refuses briefs over the hard limit", async () => {
+    const forge = makeForge(new FakeWorker(() => ({ messages: [], result: { status: "finished", result: "ok" } })), { briefMaxChars: 50 });
+    await expect(forge.dispatch({ task: "x".repeat(40), context: "y".repeat(20), cwd: repo })).rejects.toThrow(/60 characters.*over the 50 limit.*Split it/);
+    expect(forge.list()).toHaveLength(0);
+  });
+
   it("warns about long briefs", async () => {
     const forge = makeForge(new FakeWorker(() => ({ messages: [], result: { status: "finished", result: "ok" } })), { briefWarnChars: 50 });
     const { warnings } = await forge.dispatch({ task: "x".repeat(40), context: "y".repeat(20), cwd: repo });

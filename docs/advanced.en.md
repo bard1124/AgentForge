@@ -81,7 +81,11 @@ A turn that fails with a retryable connection error (for example `Agent turn sto
 
 Long turns are the ones dropped connections cut off, so tasks run in slices: after each slice (a few files plus their checks) the worker ends its turn with a last line `NEXT: <next slice>`, and AgentForge sends "continue" until the worker ends without `NEXT:` and gives its final report. The task stays `running` throughout and `forge_wait` waits for all slices. `AGENTFORGE_SLICES=off` turns this off.
 
-A worker that keeps reading without editing (by default 15 tool calls or 10 minutes with no edit) is told once to start implementing, and `forge_status` says it is still exploring. At most 2 workers run at once by default; further dispatches wait as `queued` and start when a slot frees up, and `forge_cancel` drops a queued task. A dispatch whose task and context together exceed about 4,000 characters returns a warning suggesting smaller tasks or a referenced document.
+A worker that keeps reading without editing (by default 15 tool calls or 10 minutes with no edit) is told once to start implementing, and `forge_status` says it is still exploring. At most 2 workers run at once by default; further dispatches wait as `queued` and start when a slot frees up, and `forge_cancel` drops a queued task. A dispatch whose task and context together exceed about 4,000 characters returns a warning; over 8,000 it is refused, asking for tasks of one area each or a full spec in an SDD document referenced by path.
+
+When a turn emits no event for 4 minutes while no tool call is running (including a turn that goes quiet right after RUNNING), AgentForge treats the connection or model backend as stuck: it cancels the turn and continues on a fresh connection to the same agent. This counts as one of the automatic retries above. A running tool call, such as a long build, never triggers it.
+
+`agentforge doctor` checks the backend, auth and proxy variables, then runs a tiny probe turn with the board's executor and model in a temp directory and reports how long creating the agent, the first event and the whole turn took. A first event over 60s counts as slow, meaning long tasks will likely be cut off. Exit code 0 is healthy, 2 slow, 1 failed; `--model` picks another model and `--timeout` changes the limit (default 180s).
 
 When the SDK resumes after a reconnect it can run the last tool calls again. AgentForge spots a call that completes twice, adds a step, and lists it under `replayed` in `forge_result`: a replayed edit may have applied twice. `forge_result` also marks files another task in the same directory edited (`byOtherTask`) and leaves them out of the diff.
 
@@ -141,6 +145,7 @@ Settings come from the environment first, then from `AGENTFORGE_ENV_FILE` or `~/
 | `AGENTFORGE_MAX_REWORK` | `3` | Automatic rework rounds after a failed verification |
 | `AGENTFORGE_VERIFY_TIMEOUT_SEC` | `900` | Timeout of the verification command |
 | `AGENTFORGE_STALL_WARN_SEC` | `120` | Silence after which `forge_status` hints that the worker may be stalled |
+| `AGENTFORGE_STALL_RECOVER_SEC` | `240` | Silence with no tool call running after which the turn is cancelled and continued; `0` turns it off |
 | `AGENTFORGE_START_TIMEOUT_SEC` | `300` | Limit for creating the agent and for starting each run |
 | `AGENTFORGE_AUTO_RETRY` | `3` | Automatic continuations of a turn that failed with a connection error (at most 3); `0` turns them off |
 | `AGENTFORGE_AUTO_RETRY_DELAY_SEC` | `5` | Wait before the first automatic retry; doubles for each further one |
@@ -149,6 +154,7 @@ Settings come from the environment first, then from `AGENTFORGE_ENV_FILE` or `~/
 | `AGENTFORGE_EXPLORE_NUDGE_CALLS` | `15` | Tool calls without an edit before the worker is told to start editing; `0` turns it off |
 | `AGENTFORGE_EXPLORE_NUDGE_MINUTES` | `10` | Or minutes of work without an edit; `0` turns it off |
 | `AGENTFORGE_BRIEF_WARN_CHARS` | `4000` | Task + context length above which dispatch warns |
+| `AGENTFORGE_BRIEF_MAX_CHARS` | `8000` | Task + context length above which dispatch is refused; `0` means no limit |
 | `AGENTFORGE_OPEN_PROGRESS` | `cursor` | Editor command that opens a task's progress page when it starts; `off` turns it off |
 | `AGENTFORGE_MONITOR_PORT` | `18862` | Port of the read-only monitor page the backend serves; `0` turns it off |
 | `AGENTFORGE_MCP_CONFIG` | `~/.agentforge/mcp.json` | MCP servers workers may use (absolute path) |

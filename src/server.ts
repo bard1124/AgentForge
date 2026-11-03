@@ -130,7 +130,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
         context: z
           .string()
           .optional()
-          .describe("What you already found, so the agent need not rediscover it: file paths with line ranges, signatures to change, test helpers and an example test, decisions and links. Keep task + context under about 4,000 characters."),
+          .describe("What you already found, so the agent need not rediscover it: file paths with line ranges, signatures to change, test helpers and an example test, decisions and links. Keep task + context under about 4,000 characters; over 8,000 is refused."),
         worker: z.string().optional().describe(`Which worker runs the task. Available: ${workers.join(", ")}. Defaults to the executor chosen on the board.`),
         model: z.string().optional().describe("Worker model id. Defaults to the board's model, else the executor's default."),
         model_params: z

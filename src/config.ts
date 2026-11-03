@@ -92,6 +92,8 @@ export interface ForgeConfig {
   maxStepsKept: number;
   verifyTimeoutMs: number;
   stallWarnSec: number;
+  /** Silence (no worker event, no tool call running) after which a turn is cancelled and continued; 0 disables. */
+  stallRecoverMs: number;
   startTimeoutMs: number;
   /** Automatic continuations after a transient turn failure, 0..3; after the first, only when the failed turn made progress. */
   autoRetry: number;
@@ -107,6 +109,8 @@ export interface ForgeConfig {
   exploreNudgeMs: number;
   /** Briefs (task + context) longer than this get a warning at dispatch. */
   briefWarnChars: number;
+  /** Briefs longer than this are refused; 0 disables. */
+  briefMaxChars: number;
   /** Editor command that opens a new task's progress page; undefined disables. */
   openProgress?: string;
   /** Port of the read-only monitor page the backend serves; 0 disables. */
@@ -131,6 +135,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ForgeConfig {
     maxStepsKept: intEnv(env, "MAX_STEPS", 300),
     verifyTimeoutMs: intEnv(env, "VERIFY_TIMEOUT_SEC", 900) * 1000,
     stallWarnSec: intEnv(env, "STALL_WARN_SEC", 120),
+    stallRecoverMs: intEnv(env, "STALL_RECOVER_SEC", 240) * 1000,
     startTimeoutMs: intEnv(env, "START_TIMEOUT_SEC", 300) * 1000,
     autoRetry: Math.min(intEnv(env, "AUTO_RETRY", 3), 3),
     autoRetryDelayMs: intEnv(env, "AUTO_RETRY_DELAY_SEC", 5) * 1000,
@@ -139,6 +144,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ForgeConfig {
     exploreNudgeCalls: intEnv(env, "EXPLORE_NUDGE_CALLS", 15),
     exploreNudgeMs: intEnv(env, "EXPLORE_NUDGE_MINUTES", 10) * 60_000,
     briefWarnChars: intEnv(env, "BRIEF_WARN_CHARS", 4000),
+    briefMaxChars: intEnv(env, "BRIEF_MAX_CHARS", 8000),
     openProgress: openProgress(envVar(env, "OPEN_PROGRESS")),
     monitorPort: intEnv(env, "MONITOR_PORT", 18862),
     mcpConfigPath: envVar(env, "MCP_CONFIG") ?? path.join(home, "mcp.json"),

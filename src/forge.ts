@@ -337,6 +337,13 @@ export class Forge {
     if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new ForgeError(`cwd does not exist or is not a directory: ${cwd}`);
     this.resolveMcp(input.mcpServers ?? []);
 
+    const size = input.task.length + (input.context?.length ?? 0);
+    if (this.config.briefMaxChars > 0 && size > this.config.briefMaxChars) {
+      throw new ForgeError(
+        `The brief is ${size} characters (task + context), over the ${this.config.briefMaxChars} limit (AGENTFORGE_BRIEF_MAX_CHARS). ` +
+          "Work this large stalls and times out in one agent. Split it into tasks of one area each (about 20-30 minutes of work), dispatched in order or with isolation \"worktree\"; put the full spec in an SDD document and reference its path instead of pasting it.",
+      );
+    }
     const id = this.store.newId();
     const isolated = input.isolation === "worktree";
     const busy = this.list().filter((t) => (t.worktree?.origin ?? t.cwd) === cwd && t.status === "running" && !t.worktree);
@@ -369,7 +376,6 @@ export class Forge {
     const notes = readProjectNotes(cwd, this.config.home);
     if (notes) warnings.push(`Project notes added to the brief from ${notes.files.join(", ")}.`);
     const brief = buildBrief({ task: input.task, cwd: workdir, acceptance: input.acceptance, verifyCommand: input.verifyCommand, context, projectNotes: notes?.text, slices: this.config.slices });
-    const size = input.task.length + (input.context?.length ?? 0);
     if (this.config.briefWarnChars > 0 && size > this.config.briefWarnChars) {
       warnings.push(
         `The brief is ${size} characters (task + context). Long briefs make workers spend their first turn reading instead of editing, and long turns are the ones connection drops cut off. ` +
@@ -946,6 +952,18 @@ export class Forge {
       void run.cancel().catch(() => undefined);
     }, Math.max(0, task.maxTaskMs - task.activeMs));
     const completed = new Set<string>();
+    let silent: number | undefined;
+    const recoverMs = this.config.stallRecoverMs;
+    const watchdog =
+      recoverMs > 0
+        ? setInterval(() => {
+            const idle = Date.now() - Date.parse(task.lastEventAt ?? turn.startedAt);
+            if (silent !== undefined || idle < recoverMs || this.currentTool(task) || live.pausing || live.cancelling) return;
+            silent = Math.round(idle / 1000);
+            this.addStep(task, { kind: "status", text: `No worker events for ${silent}s and no tool call running; restarting the turn on a fresh connection.` });
+            void run.cancel().catch(() => undefined);
+          }, Math.min(5000, Math.max(50, recoverMs / 4)))
+        : undefined;
     const eta = { text: "", open: turn.index === 1 && task.estimate?.source !== "worker" };
     try {
       for await (const message of run.messages()) {
@@ -973,6 +991,12 @@ export class Forge {
       turn.retryable = isRetryableError(err);
     }
     clearTimeout(budgetTimer);
+    clearInterval(watchdog);
+    if (silent !== undefined && !live.pausing && !live.cancelling) {
+      turn.status = "error";
+      turn.error = `Worker went silent for ${silent}s with no tool call running (stalled connection or model backend).`;
+      turn.retryable = true;
+    }
     turn.endedAt = now();
     task.activeMs += Date.parse(turn.endedAt) - Date.parse(turn.startedAt);
     const stopping = !!live.pausing || !!live.cancelling;

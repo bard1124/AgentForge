@@ -81,7 +81,11 @@ status、wait、result 和 cancel 都接受 `task_id` 或 `order_id`。在 Claud
 
 长轮次最容易被断线打断，所以任务按“切片”执行：worker 每完成一块（几个文件加对应检查）就结束本轮，最后一行写 `NEXT: <下一块>`；AgentForge 自动发送“继续”，直到 worker 不再写 `NEXT:` 并给出最终报告。整个过程中任务保持 `running`，`forge_wait` 等到全部切片完成。`AGENTFORGE_SLICES=off` 可关闭。
 
-worker 若一直在读代码、迟迟不动手（默认 15 次工具调用或 10 分钟仍没有编辑），AgentForge 会提醒它一次立即开始实现，`forge_status` 也会提示“still exploring”。同时运行的 worker 默认最多 2 个，多出的任务以 `queued` 状态排队，有空位后自动启动；排队中的任务可以 `forge_cancel`。task 与 context 合计超过约 4,000 字符时，派发会返回警告，建议拆分任务或把细节放进文档再引用。
+worker 若一直在读代码、迟迟不动手（默认 15 次工具调用或 10 分钟仍没有编辑），AgentForge 会提醒它一次立即开始实现，`forge_status` 也会提示“still exploring”。同时运行的 worker 默认最多 2 个，多出的任务以 `queued` 状态排队，有空位后自动启动；排队中的任务可以 `forge_cancel`。task 与 context 合计超过约 4,000 字符时，派发会返回警告；超过 8,000 字符直接拒绝，要求拆成每次一个区域的小任务，或把完整需求放进 SDD 文档再引用路径。
+
+某一轮如果没有工具在执行、却超过 4 分钟没有任何事件（包括刚 RUNNING 就不再输出的情况），AgentForge 判定连接或模型后端卡死，会取消这一轮，换新连接在同一个 agent 上续跑。这次续跑计入上面的自动续跑次数。有工具在执行时（例如长时间构建）不会触发。
+
+`agentforge doctor` 检查后台、认证和代理环境变量，并用看板当前的执行端和模型在临时目录里跑一个极小的探测轮次，报告创建 agent、首个事件和完成各用了多久。首个事件超过 60 秒视为连接慢，长任务很可能被中断；退出码 0 表示正常，2 表示慢，1 表示失败。可用 `--model` 换模型、`--timeout` 改时限（默认 180 秒）。
 
 SDK 断线恢复时可能把最后几个工具调用再执行一遍。AgentForge 发现同一调用完成两次时会记一条步骤，并在 `forge_result` 的 `replayed` 中列出：被重放的编辑可能写入了两次。`forge_result` 还会标出同一目录下其他任务编辑过的文件（`byOtherTask`），diff 默认不包含它们。
 
@@ -141,6 +145,7 @@ worker 可以从 `~/.agentforge/mcp.json`（或 `AGENTFORGE_MCP_CONFIG`）列出
 | `AGENTFORGE_MAX_REWORK` | `3` | 验证失败后的自动返工轮数 |
 | `AGENTFORGE_VERIFY_TIMEOUT_SEC` | `900` | 验证命令超时 |
 | `AGENTFORGE_STALL_WARN_SEC` | `120` | worker 静默多久后 `forge_status` 提示可能卡住 |
+| `AGENTFORGE_STALL_RECOVER_SEC` | `240` | 无工具执行时静默多久自动取消并续跑；`0` 关闭 |
 | `AGENTFORGE_START_TIMEOUT_SEC` | `300` | 创建 agent 和每次开始运行的时限 |
 | `AGENTFORGE_AUTO_RETRY` | `3` | 因连接错误失败的轮次自动续跑的次数（最多 3）；`0` 关闭 |
 | `AGENTFORGE_AUTO_RETRY_DELAY_SEC` | `5` | 首次自动续跑前的等待，之后每次翻倍 |
@@ -149,6 +154,7 @@ worker 可以从 `~/.agentforge/mcp.json`（或 `AGENTFORGE_MCP_CONFIG`）列出
 | `AGENTFORGE_EXPLORE_NUDGE_CALLS` | `15` | 多少次工具调用仍无编辑时提醒 worker 动手；`0` 关闭 |
 | `AGENTFORGE_EXPLORE_NUDGE_MINUTES` | `10` | 或运行多久仍无编辑时提醒；`0` 关闭 |
 | `AGENTFORGE_BRIEF_WARN_CHARS` | `4000` | task + context 超过此长度时派发返回警告 |
+| `AGENTFORGE_BRIEF_MAX_CHARS` | `8000` | task + context 超过此长度时拒绝派发；`0` 不限 |
 | `AGENTFORGE_OPEN_PROGRESS` | `cursor` | 任务启动后用来打开进度页的编辑器命令；`off` 关闭 |
 | `AGENTFORGE_MONITOR_PORT` | `18862` | 后台提供只读监控网页的端口；`0` 关闭 |
 | `AGENTFORGE_MCP_CONFIG` | `~/.agentforge/mcp.json` | worker 可用的 MCP 服务器（绝对路径） |

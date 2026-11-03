@@ -55,7 +55,7 @@ describe("worker defaults", () => {
 
   it("reads the automatic retry setting, capped at three", () => {
     expect(loadConfig({}).autoRetry).toBe(3);
-    expect(loadConfig({})).toMatchObject({ slices: true, maxConcurrent: 2, exploreNudgeCalls: 15, exploreNudgeMs: 600_000, briefWarnChars: 4000, autoRetryDelayMs: 5000 });
+    expect(loadConfig({})).toMatchObject({ slices: true, maxConcurrent: 2, exploreNudgeCalls: 15, exploreNudgeMs: 600_000, briefWarnChars: 4000, briefMaxChars: 8000, stallRecoverMs: 240_000, autoRetryDelayMs: 5000 });
     expect(loadConfig({ AGENTFORGE_SLICES: "off", AGENTFORGE_MAX_CONCURRENT: "0" })).toMatchObject({ slices: false, maxConcurrent: 0 });
     expect(loadConfig({})).toMatchObject({ openProgress: "cursor", monitorPort: 18862 });
     expect(loadConfig({ AGENTFORGE_OPEN_PROGRESS: "off", AGENTFORGE_MONITOR_PORT: "0" })).toMatchObject({ openProgress: undefined, monitorPort: 0 });
