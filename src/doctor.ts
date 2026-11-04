@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ModelParameterValue } from "@cursor/sdk";
-import { probe } from "./backend.js";
+import { backendRequest, probe } from "./backend.js";
 import type { ForgeConfig } from "./config.js";
 import { readDelegation } from "./delegation.js";
 import type { Worker } from "./workers/worker.js";
@@ -99,7 +99,12 @@ const PROXY_VARS = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "A
 export async function doctor(config: ForgeConfig, workers: Record<string, Worker>, opts: { model?: string; timeoutMs?: number }, print: (line: string) => void): Promise<number> {
   const { settings } = readDelegation(config.home);
   const backend = await probe(config.home);
-  print(backend ? `Backend: running, pid ${backend.pid}, version ${backend.version}.` : "Backend: not running (it starts with the next Claude Code session or `agentforge backend start`).");
+  const commit = backend ? await backendRequest<{ commit?: string }>(config.home, "GET", "/api/status").then((s) => s.commit, () => undefined) : undefined;
+  print(
+    backend
+      ? `Backend: running, pid ${backend.pid}, version ${backend.version}${commit ? ` (commit ${commit})` : ""}.`
+      : "Backend: not running (it starts with the next Claude Code session or `agentforge backend start`).",
+  );
   print(config.apiKey ? "Auth: CURSOR_API_KEY is set." : "Auth: no CURSOR_API_KEY; using the `agentforge login` key if there is one.");
   const proxies = PROXY_VARS.filter((v) => process.env[v]);
   print(proxies.length ? `Proxy variables: ${proxies.map((v) => `${v}=${process.env[v]}`).join(", ")}` : "Proxy variables: none set.");

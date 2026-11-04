@@ -277,6 +277,7 @@ route("POST", "/api/backend/stop", (ctx) => {
 route("GET", "/api/status", (ctx) => ({
   pid: process.pid,
   version: ctx.version,
+  commit: ctx.commit,
   startedAt: ctx.startedAt,
   home: ctx.config.home,
   mcpSessions: ctx.sessions(),

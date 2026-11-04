@@ -94,6 +94,8 @@ export interface ForgeConfig {
   stallWarnSec: number;
   /** Silence (no worker event, no tool call running) after which a turn is cancelled and continued; 0 disables. */
   stallRecoverMs: number;
+  /** The same while a tool call is running, which may be a long build or a lost tool result; 0 disables. */
+  stallRecoverToolMs: number;
   startTimeoutMs: number;
   /** Automatic continuations after a transient turn failure, 0..3; after the first, only when the failed turn made progress. */
   autoRetry: number;
@@ -136,6 +138,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ForgeConfig {
     verifyTimeoutMs: intEnv(env, "VERIFY_TIMEOUT_SEC", 900) * 1000,
     stallWarnSec: intEnv(env, "STALL_WARN_SEC", 120),
     stallRecoverMs: intEnv(env, "STALL_RECOVER_SEC", 240) * 1000,
+    stallRecoverToolMs: intEnv(env, "STALL_RECOVER_TOOL_SEC", 900) * 1000,
     startTimeoutMs: intEnv(env, "START_TIMEOUT_SEC", 300) * 1000,
     autoRetry: Math.min(intEnv(env, "AUTO_RETRY", 3), 3),
     autoRetryDelayMs: intEnv(env, "AUTO_RETRY_DELAY_SEC", 5) * 1000,

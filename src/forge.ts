@@ -952,18 +952,22 @@ export class Forge {
       void run.cancel().catch(() => undefined);
     }, Math.max(0, task.maxTaskMs - task.activeMs));
     const completed = new Set<string>();
-    let silent: number | undefined;
-    const recoverMs = this.config.stallRecoverMs;
-    const watchdog =
-      recoverMs > 0
-        ? setInterval(() => {
-            const idle = Date.now() - Date.parse(task.lastEventAt ?? turn.startedAt);
-            if (silent !== undefined || idle < recoverMs || this.currentTool(task) || live.pausing || live.cancelling) return;
-            silent = Math.round(idle / 1000);
-            this.addStep(task, { kind: "status", text: `No worker events for ${silent}s and no tool call running; restarting the turn on a fresh connection.` });
-            void run.cancel().catch(() => undefined);
-          }, Math.min(5000, Math.max(50, recoverMs / 4)))
-        : undefined;
+    let silent: { sec: number; tool?: string } | undefined;
+    const { stallRecoverMs: recoverMs, stallRecoverToolMs: toolMs } = this.config;
+    const tick = Math.min(...[recoverMs, toolMs].filter((ms) => ms > 0));
+    const watchdog = Number.isFinite(tick)
+      ? setInterval(() => {
+          if (silent || live.pausing || live.cancelling) return;
+          const idle = Date.now() - Date.parse(task.lastEventAt ?? turn.startedAt);
+          const tool = this.currentTool(task);
+          const limit = tool ? toolMs : recoverMs;
+          if (limit <= 0 || idle < limit) return;
+          silent = { sec: Math.round(idle / 1000), tool: tool && `${tool.tool} call (${truncate(tool.text, 120)})` };
+          const why = silent.tool ? `while its ${silent.tool} shows as running (a hung command or a lost tool result)` : "and no tool call running";
+          this.addStep(task, { kind: "status", text: `No worker events for ${silent.sec}s ${why}; restarting the turn on a fresh connection.` });
+          void run.cancel().catch(() => undefined);
+        }, Math.min(5000, Math.max(50, tick / 4)))
+      : undefined;
     const eta = { text: "", open: turn.index === 1 && task.estimate?.source !== "worker" };
     try {
       for await (const message of run.messages()) {
@@ -994,7 +998,9 @@ export class Forge {
     clearInterval(watchdog);
     if (silent !== undefined && !live.pausing && !live.cancelling) {
       turn.status = "error";
-      turn.error = `Worker went silent for ${silent}s with no tool call running (stalled connection or model backend).`;
+      turn.error = silent.tool
+        ? `Worker went silent for ${silent.sec}s during its ${silent.tool}: a hung command or a lost tool result.`
+        : `Worker went silent for ${silent.sec}s with no tool call running (stalled connection or model backend).`;
       turn.retryable = true;
     }
     turn.endedAt = now();
@@ -1253,6 +1259,11 @@ export class Forge {
       case "running":
         if (idleSec !== undefined && idleSec >= this.config.stallWarnSec) {
           const tool = this.currentTool(task);
+          const limitMs = tool ? this.config.stallRecoverToolMs : this.config.stallRecoverMs;
+          if (task.status === "running" && limitMs > 0 && this.trailingAutoRetries(task) < this.config.autoRetry) {
+            const doing = tool ? `its ${tool.tool} call (${truncate(tool.text, 120)}) has run ${tool.runningSec}s` : "no tool call is running";
+            return `Worker has emitted nothing for ${idleSec}s; ${doing}. AgentForge restarts the turn on its own after ${Math.round(limitMs / 1000)}s of silence and continues with the progress so far. Keep waiting; do not forge_cancel or re-dispatch.`;
+          }
           if (tool) {
             return `Worker has emitted nothing for ${idleSec}s while its ${tool.tool} call (${truncate(tool.text, 120)}) has run ${tool.runningSec}s. The command may hang or wait for input. Tell the user; forge_followup can tell the worker to stop it, or forge_cancel ends the turn.`;
           }

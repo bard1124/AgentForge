@@ -328,11 +328,12 @@ async function backendCommand(args: string[], config: ForgeConfig): Promise<numb
         out(`${backend.BACKEND_TITLE} is not running (home ${home}). It starts with the first Claude Code session, or \`agentforge backend start\`.`);
         return 1;
       }
-      const status = await backend.backendRequest<{ mcpSessions: number; running: string[] }>(home, "GET", "/api/status");
+      const status = await backend.backendRequest<{ mcpSessions: number; running: string[]; commit?: string }>(home, "GET", "/api/status");
       out(`${backend.BACKEND_TITLE} running`);
       out(`  pid:          ${info.pid}`);
       out(`  address:      127.0.0.1:${info.port}`);
       out(`  version:      ${info.version}${info.version !== backend.packageVersion() ? ` (installed ${backend.packageVersion()}; restart to apply)` : ""}`);
+      if (status.commit) out(`  commit:       ${status.commit}`);
       out(`  started:      ${info.startedAt}`);
       out(`  mcp sessions: ${status.mcpSessions}`);
       out(`  running:      ${status.running.length ? status.running.join(", ") : "none"}`);

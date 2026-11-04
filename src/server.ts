@@ -9,6 +9,7 @@ import { progressFile } from "./progress.js";
 import { recordTraffic } from "./savings.js";
 import { SddError, SddStore } from "./sdd.js";
 import { estimateTokens } from "./tokens.js";
+import { packageVersion } from "./version.js";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
@@ -81,7 +82,7 @@ export const INSTRUCTIONS = [
 ].join("\n");
 
 export function createServer(forge: Forge, defaultCwd: string, config: ForgeConfig): McpServer {
-  const server = new McpServer({ name: "agentforge", version: "0.5.1" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "agentforge", version: packageVersion() }, { instructions: INSTRUCTIONS });
   const sdd = new SddStore(config.home, config.worker);
   const workers = forge.workerNames();
   const handle = handler(config.home);

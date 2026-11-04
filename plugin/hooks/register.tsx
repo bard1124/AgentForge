@@ -751,7 +751,7 @@ function updateSection($: EngineInterface, c: Ctx, m: BoardModel) {
     </Button>
   );
   const rows: RenderChildren[] = [
-    row(c, `AgentForge ${m.backend ? `v${m.backend.version}` : ""}`.trim(), status, toggleDetails),
+    row(c, `AgentForge ${m.backend ? `v${m.backend.version}${u?.backendCommit ? ` · ${u.backendCommit}` : ""}` : ""}`.trim(), status, toggleDetails),
   ];
   if (m.updateOpen) {
     const newerCommit = !!u?.backendCommit && !!u.installedCommit && u.backendCommit !== u.installedCommit;

@@ -362,6 +362,38 @@ describe("Forge", () => {
     expect(forge.get(task.id).turns.map((u) => u.status)).toEqual(["finished"]);
   });
 
+  it("restarts a turn whose tool call stays running past the tool limit", async () => {
+    let round = 0;
+    const worker = new FakeWorker(() => {
+      round += 1;
+      return round === 1
+        ? { messages: [tool("h1", "running", { command: "mvn test" }, "shell")], result: { status: "finished", result: "never" }, holdUntil: new Promise<void>(() => undefined) }
+        : { messages: [], result: { status: "finished", result: "ok" } };
+    });
+    const forge = makeForge(worker, { stallRecoverMs: 60_000, stallRecoverToolMs: 150 });
+    const { task } = await forge.dispatch({ task: "build", cwd: repo });
+    await forge.wait(task.id, 5);
+    const t = forge.get(task.id);
+    expect(t.status).toBe("finished");
+    expect(t.turns[0]?.error).toMatch(/during its shell call \(mvn test\): a hung command or a lost tool result/);
+  });
+
+  it("tells the supervisor to keep waiting while automatic recovery is armed", async () => {
+    let release!: () => void;
+    const worker = new FakeWorker(() => ({ messages: [], result: { status: "finished", result: "ok" }, holdUntil: new Promise<void>((r) => (release = r)) }));
+    const forge = makeForge(worker, { stallWarnSec: 0, stallRecoverMs: 60_000 });
+    const { task } = await forge.dispatch({ task: "think", cwd: repo });
+    expect(forge.status(task.id).hint).toMatch(/restarts the turn on its own after 60s.*Keep waiting; do not forge_cancel/);
+    release();
+    await forge.wait(task.id, 5);
+
+    const manual = makeForge(new FakeWorker(() => ({ messages: [], result: { status: "finished", result: "ok" }, holdUntil: new Promise<void>((r) => (release = r)) })), { stallWarnSec: 0, stallRecoverMs: 0 });
+    const other = await manual.dispatch({ task: "think", cwd: repo });
+    expect(manual.status(other.task.id).hint).toMatch(/forge_cancel then forge_followup/);
+    release();
+    await manual.wait(other.task.id, 5);
+  });
+
   it("refuses briefs over the hard limit", async () => {
     const forge = makeForge(new FakeWorker(() => ({ messages: [], result: { status: "finished", result: "ok" } })), { briefMaxChars: 50 });
     await expect(forge.dispatch({ task: "x".repeat(40), context: "y".repeat(20), cwd: repo })).rejects.toThrow(/60 characters.*over the 50 limit.*Split it/);
