@@ -228,3 +228,14 @@ npm run dev         # tsc --watch
 node dist/cli.js install && claude plugin test ~/.agentforge/marketplace/agentforge   # board pane tests
 (cd plugin && npx -p typescript@5 tsc -p tsconfig.json)   # type-check the board; copy claude-code.d.ts to plugin/.claude-plugin/types/claude-code/index.d.ts first
 ```
+
+### Releasing
+
+Every push to `main` reaches users through the board's updater, so every push must raise the version (`package.json` and `package-lock.json` in step):
+
+```bash
+npm run bump                 # patch +1; npm run bump -- minor for a minor release
+git config core.hooksPath scripts/hooks   # once per clone: check the version before pushing
+```
+
+The `pre-push` hook and the CI `version` job both refuse a push whose version did not go up.

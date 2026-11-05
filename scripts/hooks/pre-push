@@ -1,0 +1,11 @@
+#!/bin/sh
+# Refuses a push to main whose version is not higher than the remote's. Enable once per clone:
+#   git config core.hooksPath scripts/hooks
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$remote_ref" = "refs/heads/main" ] || continue
+  case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+  base="$remote_sha"
+  git cat-file -e "$base^{commit}" 2>/dev/null || base="origin/main"
+  node scripts/check-version.mjs "$base" "$local_sha" || exit 1
+done
+exit 0

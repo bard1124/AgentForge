@@ -228,3 +228,14 @@ npm run dev         # tsc --watch
 node dist/cli.js install && claude plugin test ~/.agentforge/marketplace/agentforge   # 看板面板测试
 (cd plugin && npx -p typescript@5 tsc -p tsconfig.json)   # 看板类型检查；先把 claude-code.d.ts 复制到 plugin/.claude-plugin/types/claude-code/index.d.ts
 ```
+
+### 发布
+
+每次推送到 `main` 都会通过看板的更新器发给用户，所以每次推送都必须提高版本号（`package.json` 和 `package-lock.json` 保持一致）：
+
+```bash
+npm run bump                 # 补丁版本 +1；npm run bump -- minor 提升次版本
+git config core.hooksPath scripts/hooks   # 每个克隆执行一次：推送前检查版本
+```
+
+`pre-push` 钩子和 CI 的 `version` 任务都会拒绝版本号没有提高的推送。
