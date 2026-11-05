@@ -202,9 +202,17 @@ agentforge tasks | show <task_id>
 
 ## Updates and uninstall
 
-The board's **Plugin update** section, or `agentforge update status|check|apply`, updates this checkout from `origin`. Opening the board checks at most once a day (shared across boards); **Update to latest** checks and installs in one click, **Check for updates** only checks; viewing the status only reads the local cache. `origin` must be the repository named in `package.json`.
+The board's **Plugin update** section, or `agentforge update status|check|apply`, checks for and installs new versions. Opening the board checks at most once a day (shared across boards); **Update to latest** checks and installs in one click, **Check for updates** only checks (and says so when you are already on the latest); viewing the status only reads the local cache. When a new version exists the board header shows **↑ Update**, and the details list what changed.
 
-An update is a fast-forward of the current branch followed by `npm ci`, `npm run build`, and a reinstall of the plugin. It runs only when tracked files are clean, the branch can fast-forward, and no task is running; local changes, a diverged branch, being offline, or busy tasks block it with the reason. It never stashes, resets, force-pushes, or touches untracked files such as SDD documents. If dependencies or the reinstall failed, **Retry install** resumes from that step. From the board the backend then restarts by itself, waiting for running tasks to finish; run `/reload-plugins` afterwards. When the running backend is older than the checkout (compared by commit, so it also shows for updates that keep the version number), the board offers **Restart backend**.
+**Release installs (default).** Each version is published as a GitHub Release with one package per platform (darwin-arm64, darwin-x64, win32-x64, linux-x64, linux-arm64), dependencies included. An update downloads this platform's package, checks it against `SHA256SUMS`, unpacks it into `~/.agentforge/versions/<version>`, reinstalls the plugin, and switches to the new backend once no task is running. The current and previous versions are recorded in `~/.agentforge/release.json`; only the last two are kept. If the new backend does not come up within 30 seconds, AgentForge goes back to the previous version and the board shows why. While no task runs, the backend checks every 6 hours and installs new stable releases by itself (turn off **Auto-update** in the details).
+
+- **Channels**: `X.Y.Z` is stable; `X.Y.Z-beta.N` is a prerelease, offered only with **Channel** set to **Beta**, and installed only when you press Update, never automatically. From the command line: `agentforge update settings --channel=stable|beta --auto=on|off`.
+- **Moving from a git clone**: users who installed with `git clone` move to a release install on their next update (even at the same version) and update by release from then on; the old clone is no longer used and can be deleted.
+- **One-line install / reinstall** (needs Node.js 22.13+): on macOS/Linux `curl -fsSL https://raw.githubusercontent.com/bard1124/AgentForge/main/scripts/install.sh | bash`; in Windows PowerShell `irm https://raw.githubusercontent.com/bard1124/AgentForge/main/scripts/install.ps1 | iex`. `AGENTFORGE_CHANNEL=beta` or `AGENTFORGE_VERSION=x.y.z` picks a version. `agentforge doctor` shows the update state and prints this command when something is wrong.
+
+**Dev checkouts.** A git clone with a `.agentforge-dev` file at its root (already in `.gitignore`) still updates by git: a fast-forward of the current branch followed by `npm ci`, `npm run build`, and a reinstall of the plugin. `origin` must be the repository named in `package.json`. It runs only when tracked files are clean, the branch can fast-forward, and no task is running; a diverged branch, being offline, or busy tasks block it with the reason. A `package-lock.json` rewritten by `npm install` is restored before updating; other local changes are listed, and **Stash & update** (`agentforge update apply --stash`) puts them in `git stash` and updates. It never resets, force-pushes, or touches untracked files such as SDD documents. If dependencies or the reinstall failed, **Retry install** resumes from that step.
+
+Either way the backend then restarts by itself, waiting for running tasks to finish; run `/reload-plugins` afterwards. When the running backend is older than the installed version (compared by commit, so it also shows for updates that keep the version number), the board offers **Restart backend**.
 
 `agentforge uninstall [--claude <path>]` removes the plugin and its marketplace; task records and settings in `~/.agentforge` stay.
 
@@ -213,7 +221,7 @@ An update is a fast-forward of the current branch followed by `npm ci`, `npm run
 - Workers run inside the shared backend. Closing a Claude Code session does not stop them; stopping or restarting the backend mid-turn does, and the task shows `uncertain` until `forge_followup` resumes the same Cursor agent.
 - The board needs Claude Code's function hooks (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, early access). Without them the tools, the prompt hook, and `agentforge config` still work.
 - `verify_command` runs in the system shell: `/bin/sh` on macOS, `cmd.exe` on Windows. For both, write commands that run in either, such as `npm test` or `node ...`.
-- On Windows, plugin updates use `npm install` instead of `npm ci`: Windows locks native modules the backend has loaded, so `node_modules` cannot be deleted.
+- On Windows, dev-checkout updates use `npm install` instead of `npm ci`: Windows locks native modules the backend has loaded, so `node_modules` cannot be deleted.
 - The hook note is advice to Claude Code, not a lock: with auto-dispatch on it may still answer questions or make trivial edits itself, and with it off it still delegates when you ask.
 - Parallel tasks in the same `cwd` can overwrite each other's edits. `forge_dispatch` warns about this but does not prevent it.
 - The Cursor worker runs with the permissions of your user account. Give it the same trust you would give Cursor's agent mode.
@@ -231,11 +239,13 @@ node dist/cli.js install && claude plugin test ~/.agentforge/marketplace/agentfo
 
 ### Releasing
 
-Every push to `main` reaches users through the board's updater, so every push must raise the version (`package.json` and `package-lock.json` in step):
+On every push to `main`, the CI Release workflow packs the 5 platforms at the `package.json` version and creates the GitHub Release `v<version>` (skipped if the tag exists); users' updaters update from it. So every push must raise the version (`package.json`, `package-lock.json`, and `plugin/.claude-plugin/plugin.json` in step):
 
 ```bash
-npm run bump                 # patch +1; npm run bump -- minor for a minor release
+npm run bump                 # patch +1; -- minor for a minor release; -- beta for a prerelease (X.Y.Z-beta.N)
 git config core.hooksPath scripts/hooks   # once per clone: check the version before pushing
+touch .agentforge-dev        # once per dev clone: keep updating by git instead of moving to releases
+node scripts/pack-release.mjs /tmp/release   # try the packaging locally (after npm run build)
 ```
 
-The `pre-push` hook and the CI `version` job both refuse a push whose version did not go up.
+The `pre-push` hook and the CI `version` job both refuse a push whose version did not go up or whose three versions differ. A version with a suffix is published as a prerelease, visible only on the Beta channel.

@@ -3,3 +3,4 @@ dist/
 .env
 *.log
 plugin/.claude-plugin/types/
+.agentforge-dev

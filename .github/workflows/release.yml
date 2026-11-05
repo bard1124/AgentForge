@@ -1,0 +1,52 @@
+name: Release
+
+# Publishes a GitHub release for each new version: one package per platform plus SHA256SUMS.
+# Versions with a suffix (0.6.2-beta.0) and pushes to ci/release-* are prereleases (beta channel).
+on:
+  push:
+    branches: [main, "ci/release-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "Tag v$version exists; nothing to release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.version.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - if: steps.version.outputs.skip != 'true'
+        run: npm ci --no-audit --no-fund && npm run build
+      - if: steps.version.outputs.skip != 'true'
+        run: |
+          previous=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+          node scripts/pack-release.mjs release "$previous"
+      - if: steps.version.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          flags=""
+          case "$VERSION" in *-*) flags="--prerelease" ;; esac
+          [ "$GITHUB_REF_NAME" = "main" ] || flags="--prerelease"
+          gh release create "v$VERSION" release/*.tar.gz release/SHA256SUMS \
+            --target "$GITHUB_SHA" --title "AgentForge $VERSION" --notes-file release/notes.md $flags

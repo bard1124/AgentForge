@@ -51,13 +51,24 @@ Claude 在 Claude Code 中做关键决策，Cursor agent 负责高频交付：
 - **Claude Code CLI**（`claude` 在 `PATH` 中，或安装时用 `--claude` 指定路径）。看板依赖 Claude Code 的 function hooks（早期功能），启动时需设置 `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`；不开启时 MCP 工具、提示 Hook 和命令行设置仍可用。
 - **Cursor 账号**：浏览器登录，或准备好 `CURSOR_API_KEY`。
 
+**一键安装（推荐）**：下载本平台的发布包（已含依赖、校验 SHA256），装到 `~/.agentforge/versions/<版本>`，注册插件并启动后台，相当于完成了下面的第 3 步。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bard1124/AgentForge/main/scripts/install.sh | bash          # macOS / Linux
+irm https://raw.githubusercontent.com/bard1124/AgentForge/main/scripts/install.ps1 | iex                  # Windows PowerShell
+```
+
+之后的 `agentforge` 命令即 `node ~/.agentforge/versions/<版本>/dist/cli.js`。
+
+**从源码安装**：
+
 ```bash
 git clone https://github.com/bard1124/AgentForge.git
 cd AgentForge
 npm install && npm run build
 ```
 
-安装完成后请保留仓库目录，插件运行时会从这里的 `dist/` 启动。下文的 `agentforge` 命令等同于 `node dist/cli.js`；运行 `npm link` 后可直接使用 `agentforge`。
+源码安装的插件从仓库的 `dist/` 启动，下一次更新时会自动迁移到发布版安装。下文的 `agentforge` 命令等同于 `node dist/cli.js`；运行 `npm link` 后可直接使用 `agentforge`。
 
 ### 2. 连接 Cursor
 
@@ -150,9 +161,9 @@ SDD 有独立开关，在看板中设置，默认开启；工作区默认 `~/.ag
 
 ### 检查并安装插件更新
 
-看板底部折叠的「Plugin update」区，或 `agentforge update status|check|apply`，可以从 `origin` 更新本仓库。打开看板时每天最多自动检查一次；「Update to latest」一键检查并安装，「Check for updates」只检查。
+看板底部折叠的「Plugin update」区，或 `agentforge update status|check|apply`，从 GitHub Releases 安装新版本：按 SHA256 校验，等没有运行中的任务时切换，新后台起不来会自动回到上一个版本。打开看板时每天最多自动检查一次，详情里显示更新内容；「Update to latest」一键检查并安装，「Check for updates」只检查。默认在空闲时自动安装稳定版，可在详情里关闭，或切到 Beta 渠道接收预发布版（预发布版只手动安装）。
 
-只有已跟踪文件干净、当前分支可快进且没有运行中的任务时才会更新：快进后执行 `npm ci`、`npm run build` 并重装插件。不会 stash、reset、强推，也不会动 SDD 文档等未跟踪文件。从看板更新时后台会自动重启（有任务运行时等任务结束），之后在 Claude Code 中运行 `/reload-plugins`。
+更新后后台会自动重启（有任务运行时等任务结束），之后在 Claude Code 中运行 `/reload-plugins`。开发克隆的 git 更新方式见[进阶手册](docs/advanced.md#更新与卸载)。
 
 ### 多个会话一起使用
 

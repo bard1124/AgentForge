@@ -202,9 +202,17 @@ agentforge tasks | show <task_id>
 
 ## 更新与卸载
 
-看板的 **Plugin update** 区，或 `agentforge update status|check|apply`，从 `origin` 更新本仓库。打开看板时每天最多检查一次（多个看板共享）；**Update to latest** 一键检查并安装，**Check for updates** 只检查；查看状态只读本地缓存。`origin` 必须是 `package.json` 中登记的仓库。
+看板的 **Plugin update** 区，或 `agentforge update status|check|apply`，检查并安装新版本。打开看板时每天最多检查一次（多个看板共享）；**Update to latest** 一键检查并安装，**Check for updates** 只检查（没有新版本时会提示已是最新）；查看状态只读本地缓存。有新版本时看板顶部显示 **↑ Update**，详情里列出更新内容。
 
-更新即快进当前分支，然后执行 `npm ci`、`npm run build` 并重装插件。只有已跟踪文件干净、分支可快进且没有运行中的任务时才执行；有本地改动、分叉、离线或任务忙碌时会阻止并说明原因。不会 stash、reset、强推，也不会动 SDD 文档等未跟踪文件。依赖安装或重装失败时，**Retry install** 从该步骤继续。从看板更新时，完成后后台会自动重启（有任务运行时等任务结束），之后运行 `/reload-plugins`。运行中的后台比仓库旧时（按 commit 比较，版本号不变的更新也能发现），看板会提供 **Restart backend**。
+**发布版安装（默认）。** 每个版本以 GitHub Release 发布，按平台打包（darwin-arm64、darwin-x64、win32-x64、linux-x64、linux-arm64），依赖已装好。更新时下载本平台的包，按 `SHA256SUMS` 校验后解压到 `~/.agentforge/versions/<版本>`，重装插件，等没有运行中的任务时切到新版后台；当前版本和上一个版本记录在 `~/.agentforge/release.json`，只保留最近两个版本。新后台 30 秒内没有起来时自动回到上一个版本，看板显示回滚原因。没有运行中的任务时，后台每 6 小时检查一次并自动安装新的稳定版（详情里的 **Auto-update** 可关闭）。
+
+- **渠道**：`X.Y.Z` 是稳定版；`X.Y.Z-beta.N` 是预发布版，只在 **Channel** 选 **Beta** 时出现，并且只在手动点 Update 时安装，不会自动安装。命令行：`agentforge update settings --channel=stable|beta --auto=on|off`。
+- **从源码克隆迁移**：用 `git clone` 安装的用户，下一次更新会直接装到发布版目录（即使版本号相同），之后按发布版更新；原克隆目录不再使用，可以删除。
+- **一键安装 / 重装**（需要 Node.js 22.13+）：macOS/Linux 用 `curl -fsSL https://raw.githubusercontent.com/bard1124/AgentForge/main/scripts/install.sh | bash`；Windows PowerShell 用 `irm https://raw.githubusercontent.com/bard1124/AgentForge/main/scripts/install.ps1 | iex`。可用 `AGENTFORGE_CHANNEL=beta` 或 `AGENTFORGE_VERSION=x.y.z` 指定版本。`agentforge doctor` 会显示更新状态，出问题时给出这条命令。
+
+**开发克隆。** 仓库根目录有 `.agentforge-dev` 文件（已在 `.gitignore`）且是 git 克隆时，仍按 git 更新：快进当前分支，然后执行 `npm ci`、`npm run build` 并重装插件。`origin` 必须是 `package.json` 中登记的仓库。只有已跟踪文件干净、分支可快进且没有运行中的任务时才执行；分叉、离线或任务忙碌时会阻止并说明原因。只有 `npm install` 改写的 `package-lock.json` 时会先还原它再更新；其它本地改动会列出文件，**Stash & update**（`agentforge update apply --stash`）把它们存进 `git stash` 后更新。不会 reset、强推，也不会动 SDD 文档等未跟踪文件。依赖安装或重装失败时，**Retry install** 从该步骤继续。
+
+两种方式更新后，后台都会自动重启（有任务运行时等任务结束），之后运行 `/reload-plugins`。运行中的后台比安装的版本旧时（按 commit 比较，版本号不变的更新也能发现），看板会提供 **Restart backend**。
 
 `agentforge uninstall [--claude <path>]` 移除插件和 marketplace；`~/.agentforge` 中的任务记录和设置保留。
 
@@ -213,7 +221,7 @@ agentforge tasks | show <task_id>
 - worker 运行在共享后台中。关闭 Claude Code 会话不会停止它们；运行中停止或重启后台会打断，任务显示 `uncertain`，直到用 `forge_followup` 在同一个 Cursor agent 上续跑。
 - 看板需要 Claude Code 的 function hooks（`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`，早期功能）。没有它时，工具、提示 Hook 和 `agentforge config` 仍可用。
 - `verify_command` 由系统 shell 执行：macOS 是 `/bin/sh`，Windows 是 `cmd.exe`。需要跨平台时写成 `npm test`、`node ...` 这类两边都能跑的命令。
-- Windows 上插件更新用 `npm install` 而不是 `npm ci`，因为后台已加载的原生模块会被系统锁定，无法删除 `node_modules`。
+- Windows 上开发克隆的更新用 `npm install` 而不是 `npm ci`，因为后台已加载的原生模块会被系统锁定，无法删除 `node_modules`。
 - Hook 说明是给 Claude Code 的建议，不是锁：开启自动派工时它仍可能自己回答问题或做很小的改动，关闭时你要求仍会派工。
 - 同一 `cwd` 中并行的任务可能互相覆盖改动。`forge_dispatch` 会警告，但不会阻止。
 - Cursor worker 以你的用户权限运行，请像对待 Cursor 的 agent 模式一样信任它。
@@ -231,11 +239,13 @@ node dist/cli.js install && claude plugin test ~/.agentforge/marketplace/agentfo
 
 ### 发布
 
-每次推送到 `main` 都会通过看板的更新器发给用户，所以每次推送都必须提高版本号（`package.json` 和 `package-lock.json` 保持一致）：
+每次推送到 `main`，CI 的 Release 工作流都会按 `package.json` 的版本打包 5 个平台并创建 GitHub Release `v<版本>`（已有同名 tag 时跳过），用户的更新器据此更新。所以每次推送都必须提高版本号（`package.json`、`package-lock.json` 和 `plugin/.claude-plugin/plugin.json` 保持一致）：
 
 ```bash
-npm run bump                 # 补丁版本 +1；npm run bump -- minor 提升次版本
+npm run bump                 # 补丁版本 +1；-- minor 提升次版本；-- beta 发预发布版（X.Y.Z-beta.N）
 git config core.hooksPath scripts/hooks   # 每个克隆执行一次：推送前检查版本
+touch .agentforge-dev        # 开发克隆执行一次：继续按 git 更新，不迁移到发布版
+node scripts/pack-release.mjs /tmp/release   # 本地试打包（先 npm run build）
 ```
 
-`pre-push` 钩子和 CI 的 `version` 任务都会拒绝版本号没有提高的推送。
+`pre-push` 钩子和 CI 的 `version` 任务都会拒绝版本号没有提高或三处不一致的推送。带后缀的版本号发布为 prerelease，只有 Beta 渠道能看到。

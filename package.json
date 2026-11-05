@@ -1,6 +1,6 @@
 {
   "name": "agentforge",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Let Claude Code dispatch work to Cursor agents, then track progress, follow up, and accept results from the same session.",
   "type": "module",
   "bin": {

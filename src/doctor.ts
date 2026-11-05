@@ -94,6 +94,11 @@ export function assessProbe(r: ProbeResult): { ok: boolean; slow: boolean; lines
   return { ok: true, slow, lines };
 }
 
+const REINSTALL =
+  process.platform === "win32"
+    ? "irm https://raw.githubusercontent.com/bard1124/AgentForge/main/scripts/install.ps1 | iex"
+    : "curl -fsSL https://raw.githubusercontent.com/bard1124/AgentForge/main/scripts/install.sh | bash";
+
 const PROXY_VARS = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"];
 
 export async function doctor(config: ForgeConfig, workers: Record<string, Worker>, opts: { model?: string; timeoutMs?: number }, print: (line: string) => void): Promise<number> {
@@ -105,6 +110,15 @@ export async function doctor(config: ForgeConfig, workers: Record<string, Worker
       ? `Backend: running, pid ${backend.pid}, version ${backend.version}${commit ? ` (commit ${commit})` : ""}.`
       : "Backend: not running (it starts with the next Claude Code session or `agentforge backend start`).",
   );
+  if (backend) {
+    type Update = { state: string; message: string; source?: string; channel?: string; apply?: { ok: boolean; rolledBack?: boolean; error?: string } };
+    const u = await backendRequest<Update>(config.home, "GET", "/api/update").catch(() => undefined);
+    if (u) {
+      print(`Updates: ${u.source === "release" ? `release install, ${u.channel ?? "stable"} channel` : "dev checkout (git)"}; ${u.state}: ${u.message}`);
+      if (u.apply && !u.apply.ok) print(`  Last install ${u.apply.rolledBack ? "was rolled back" : "failed"}: ${u.apply.error ?? ""}`);
+      if (["dirty", "diverged", "error"].includes(u.state) || (u.apply && !u.apply.ok)) print(`  Clean reinstall: ${REINSTALL}`);
+    }
+  }
   print(config.apiKey ? "Auth: CURSOR_API_KEY is set." : "Auth: no CURSOR_API_KEY; using the `agentforge login` key if there is one.");
   const proxies = PROXY_VARS.filter((v) => process.env[v]);
   print(proxies.length ? `Proxy variables: ${proxies.map((v) => `${v}=${process.env[v]}`).join(", ")}` : "Proxy variables: none set.");

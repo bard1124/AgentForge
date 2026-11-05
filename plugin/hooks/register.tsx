@@ -127,11 +127,12 @@ async function change($: EngineInterface, body: Record<string, unknown>): Promis
   }
 }
 
-async function refreshUpdate($: EngineInterface, method = "GET", route = "/api/update"): Promise<void> {
+async function refreshUpdate($: EngineInterface, method = "GET", route = "/api/update", body?: unknown): Promise<void> {
   try {
-    const status = await api<UpdateView>($, method, route);
+    const status = await api<UpdateView>($, method, route, body);
     const full = method === "GET" ? status : { ...(await api<UpdateView>($, "GET", "/api/update")), ...status };
     await set($, (m) => ({ ...m, update: full }));
+    if (route === "/api/update/check" && full.state === "up_to_date") await notice($, `Checked just now: v${full.installedVersion ?? full.backendVersion ?? "?"} is the latest.`);
   } catch (err) {
     await notice($, message(err));
   }
@@ -758,7 +759,9 @@ function updateSection($: EngineInterface, c: Ctx, m: BoardModel) {
     const stale = newerCommit || (!!u?.backendVersion && !!u.installedVersion && u.backendVersion !== u.installedVersion);
     const running = newerCommit ? `${u!.backendCommit}, installed ${u!.installedCommit}` : `${u?.backendVersion}, installed ${u?.installedVersion}`;
     const canUpdate = !u?.busy && !["ahead", "dirty", "diverged", "no_upstream", "unverified_remote"].includes(u?.state ?? "");
-    const failed = u?.apply && !u.apply.ok;
+    const failed = u?.apply && !u.apply.ok && !u.apply.rolledBack;
+    const canStash = !u?.busy && u?.state === "dirty" && u.source === "git";
+    const notes = u?.state === "available" && u.notes ? u.notes.split("\n").filter(Boolean).slice(0, 8) : [];
     rows.push(
       row(
         c,
@@ -766,7 +769,19 @@ function updateSection($: EngineInterface, c: Ctx, m: BoardModel) {
         u?.local ? <Text size="footnote" dimColor mono>{`local ${u.local} · origin ${u.remote ?? "?"}${u.checkedAt ? ` · checked ${stamp(u.checkedAt)}` : ""}`}</Text> : undefined,
         undefined,
         <Box flexDirection="column" gap="sm">
+          {u?.apply?.rolledBack ? (
+            <Text size="footnote" color="warning" wrap="wrap">{`${u.apply.to ? `v${u.apply.to}` : "The new version"} did not start, so AgentForge went back to the previous version: ${u.apply.error ?? ""}`}</Text>
+          ) : null}
           {failed ? <Text size="footnote" color="warning" wrap="wrap">{`Last install stopped${u!.apply!.stage ? ` after ${u!.apply!.stage}` : ""}: ${u!.apply!.error ?? ""}`}</Text> : null}
+          {u?.state === "dirty" && u.dirtyFiles?.length ? (
+            <Text size="footnote" dimColor mono wrap="wrap">{u.dirtyFiles.slice(0, 6).join("\n") + (u.dirtyFiles.length > 6 ? `\n… ${u.dirtyFiles.length - 6} more` : "")}</Text>
+          ) : null}
+          {notes.length ? (
+            <Box flexDirection="column">
+              <Text size="footnote" weight="medium">What's new</Text>
+              <Text size="footnote" dimColor wrap="wrap">{notes.join("\n")}</Text>
+            </Box>
+          ) : null}
           {stale ? <Text size="footnote" color="warning" wrap="wrap">{`Backend runs ${running}: restart the backend, then /reload-plugins.`}</Text> : null}
           <Box flexDirection="row" columnGap="sm" flexWrap="wrap" justifyContent="flex-end">
             <Button key="upd-refresh" plain dimColor onPress={() => void refreshUpdate($)}>Refresh status</Button>
@@ -781,10 +796,27 @@ function updateSection($: EngineInterface, c: Ctx, m: BoardModel) {
                 {failed ? "Retry install" : "Update to latest"}
               </Button>
             ) : null}
+            {canStash ? (
+              <Button key="upd-stash" variant="primary" onPress={() => void refreshUpdate($, "POST", "/api/update/apply", { stash: true })}>
+                Stash & update
+              </Button>
+            ) : null}
           </Box>
         </Box>,
       ),
     );
+    if (u?.source === "release") {
+      const change = (body: { channel?: string; auto?: boolean }) => void refreshUpdate($, "POST", "/api/update/settings", body);
+      rows.push(
+        row(
+          c,
+          "Channel",
+          u.channel === "beta" ? "Beta: prereleases too, installed when you press Update." : "Stable releases only.",
+          segmented(c, "upd-channel", [{ value: "stable", label: "Stable" }, { value: "beta", label: "Beta" }], u.channel ?? "stable", (v) => change({ channel: v })),
+        ),
+        row(c, "Auto-update", "Installs new stable releases while no task runs.", onOff(c, "upd-auto", !!u.auto, (on) => change({ auto: on }))),
+      );
+    }
   }
   const summary = u?.state === "available" ? `Update available${u.remote ? ` · ${u.remote}` : ""}` : u?.state === "up_to_date" ? "Up to date" : undefined;
   return section(c, "Plugin update", rows, undefined, fold($, m, "update", summary));
@@ -801,6 +833,7 @@ function header(c: Ctx, m: BoardModel) {
       ) : (
         <Text size="footnote" color={m.error ? "error" : "inactive"}>{m.error ? "○ Backend offline" : "Connecting…"}</Text>
       )}
+      {m.update?.state === "available" ? <Text size="footnote" color="suggestion">{`↑ Update${m.update.remote ? ` ${m.update.remote}` : ""}`}</Text> : null}
       {s ? <Text size="footnote" dimColor wrap="truncate-end">{`${s.executor} · ${s.route?.model ?? "default model"}${s.effort ? ` · ${s.effort}` : ""}`}</Text> : null}
     </Box>
   );

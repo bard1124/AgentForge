@@ -11,7 +11,7 @@ import { Forge } from "./forge.js";
 import { openInEditor } from "./progress.js";
 import { createServer } from "./server.js";
 import { TaskStore } from "./store.js";
-import { Updater } from "./updater.js";
+import { type RestartTarget, Updater } from "./updater.js";
 import { packageRoot, packageVersion } from "./version.js";
 import { loadWorkers } from "./workers/registry.js";
 
@@ -235,7 +235,7 @@ export async function runBackend(config: ForgeConfig): Promise<void> {
     root: packageRoot(),
     home,
     running,
-    restart: () => restart(),
+    restart: (target) => restart(target),
     reinstall: async () => {
       await new Promise<void>((resolve, reject) => {
         const child = spawn(process.execPath, [cli, "install"], { cwd: home, stdio: "ignore", windowsHide: true, env: { ...process.env, AGENTFORGE_HOME: home } });
@@ -245,9 +245,11 @@ export async function runBackend(config: ForgeConfig): Promise<void> {
     },
   });
   let shutdown: () => Promise<void> = async () => undefined;
-  const restart = () => {
-    // The successor waits for this process to exit before it takes the lock.
-    const child = spawn(process.execPath, [cli, "backend", "start", "--after", String(process.pid)], {
+  const restart = (target: RestartTarget | undefined = updater.restartTarget()) => {
+    // The successor waits for this process to exit before it takes the lock; with a rollback it
+    // starts that cli instead when the new one does not come up.
+    const args = [target?.cli ?? cli, "backend", "start", "--after", String(process.pid), ...(target?.rollback ? ["--rollback", target.rollback] : [])];
+    const child = spawn(process.execPath, args, {
       cwd: home,
       detached: true,
       windowsHide: true,
@@ -322,7 +324,9 @@ export async function runBackend(config: ForgeConfig): Promise<void> {
     }
   }
 
+  const stopAuto = updater.startAuto();
   shutdown = async () => {
+    stopAuto();
     server.close();
     await monitor?.close().catch(() => undefined);
     for (const transport of sessions.values()) await transport.close().catch(() => undefined);

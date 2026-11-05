@@ -47,7 +47,12 @@ export type UpdateView = {
   remote?: string;
   behind?: number;
   checkedAt?: string;
-  apply?: { ok: boolean; stage?: string; error?: string };
+  apply?: { ok: boolean; stage?: string; error?: string; rolledBack?: boolean; to?: string };
+  source?: "git" | "release";
+  channel?: "stable" | "beta";
+  auto?: boolean;
+  dirtyFiles?: string[];
+  notes?: string;
   running?: string[];
   backendVersion?: string;
   installedVersion?: string;

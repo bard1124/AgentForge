@@ -16,7 +16,7 @@ import { elapsedMs } from "./estimate.js";
 import { type Forge, ForgeError, orderStatus } from "./forge.js";
 import { savingsSummary } from "./savings.js";
 import { SddError, SddStore } from "./sdd.js";
-import type { Updater } from "./updater.js";
+import type { UpdateSettings, Updater } from "./updater.js";
 import { packageVersion } from "./version.js";
 import type { TaskStore } from "./store.js";
 import type { Task } from "./types.js";
@@ -256,13 +256,20 @@ route("GET", "/api/update", async (ctx) => ({
   ...ctx.updater.status(),
   running: runningTasks(ctx),
   backendVersion: ctx.version,
-  installedVersion: packageVersion(),
+  installedVersion: ctx.updater.installedVersion(),
   backendCommit: ctx.commit,
   installedCommit: await ctx.updater.head(),
 }));
 route("POST", "/api/update/check", async (ctx) => ctx.updater.check());
 route("POST", "/api/update/check-daily", (ctx) => ctx.updater.checkDaily());
-route("POST", "/api/update/apply", (ctx) => ctx.updater.apply());
+route("POST", "/api/update/apply", (ctx, body) => ctx.updater.apply({ stash: (body as { stash?: unknown } | undefined)?.stash === true }));
+route("POST", "/api/update/settings", (ctx, body) => {
+  const b = (body ?? {}) as { channel?: unknown; auto?: unknown };
+  const change: Partial<UpdateSettings> = {};
+  if (b.channel === "stable" || b.channel === "beta") change.channel = b.channel;
+  if (typeof b.auto === "boolean") change.auto = b.auto;
+  return ctx.updater.settings(change);
+});
 route("POST", "/api/backend/restart", (ctx) => {
   const running = runningTasks(ctx);
   if (running.length) throw new ApiError(409, `Tasks are running (${running.join(", ")}); restarting would cancel them.`);

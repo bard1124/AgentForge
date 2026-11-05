@@ -3,7 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { githubRepo, Updater } from "./updater.js";
+import crypto from "node:crypto";
+import { assetName, readReleaseState } from "./release.js";
+import { githubRepo, recordRollback, type RestartTarget, Updater } from "./updater.js";
 
 const URL = "https://github.com/acme/agentforge.git";
 let tmp: string;
@@ -23,7 +25,7 @@ function commit(cwd: string, file: string, text: string) {
 
 const noop: [string, string[]] = [process.execPath, ["-e", ""]];
 function updater(steps = { dependencies: noop, build: noop }) {
-  return new Updater({ root: clone, home: path.join(tmp, "home"), running: () => running, reinstall: async () => void reinstalls++, steps });
+  return new Updater({ root: clone, home: path.join(tmp, "home"), running: () => running, reinstall: async () => void reinstalls++, steps, source: "git" });
 }
 
 beforeEach(() => {
@@ -79,7 +81,7 @@ describe("Updater", () => {
 
   it("updates in one call: fetches, installs, and restarts the backend once no task runs", async () => {
     let restarts = 0;
-    const u = new Updater({ root: clone, home: path.join(tmp, "home"), running: () => running, reinstall: async () => void reinstalls++, restart: () => void restarts++, steps: { dependencies: noop, build: noop } });
+    const u = new Updater({ root: clone, home: path.join(tmp, "home"), running: () => running, reinstall: async () => void reinstalls++, restart: () => void restarts++, steps: { dependencies: noop, build: noop }, source: "git" });
     const before = await u.head();
     u.apply();
     await u.settled();
@@ -134,4 +136,172 @@ describe("Updater", () => {
     expect(retry.status().apply).toMatchObject({ ok: true, stage: "installed" });
     expect(reinstalls).toBe(1);
   });
+
+  it("restores a rewritten package-lock.json instead of blocking, and lists other changed files", async () => {
+    commit(other, "package-lock.json", "{\"lockfileVersion\":3}\n");
+    git(other, "push", "-q");
+    git(clone, "pull", "-q");
+    commit(other, "b.txt", "two\n");
+    git(other, "push", "-q");
+    fs.writeFileSync(path.join(clone, "package-lock.json"), "{\"rewritten\":true}\n");
+    const u = updater();
+    const checked = await u.check();
+    expect(checked).toMatchObject({ state: "available" });
+    expect(checked.message).toMatch(/package-lock.json was rewritten locally; the update restores it/);
+    expect(checked.notes).toBe("- b.txt");
+    u.apply();
+    await u.settled();
+    expect(u.status().apply).toMatchObject({ ok: true });
+    expect(fs.readFileSync(path.join(clone, "package-lock.json"), "utf8")).toBe("{\"lockfileVersion\":3}\n");
+
+    fs.writeFileSync(path.join(clone, "a.txt"), "mine\n");
+    const dirty = await u.check();
+    expect(dirty).toMatchObject({ state: "dirty", dirtyFiles: ["a.txt"] });
+    expect(dirty.message).toMatch(/Local changes in .*: a\.txt\. .*Stash & update/);
+  });
+
+  it("stashes local changes on request and updates", async () => {
+    commit(other, "b.txt", "two\n");
+    git(other, "push", "-q");
+    fs.writeFileSync(path.join(clone, "a.txt"), "mine\n");
+    const u = updater();
+    u.apply({ stash: true });
+    await u.settled();
+    expect(u.status().apply).toMatchObject({ ok: true });
+    expect(fs.existsSync(path.join(clone, "b.txt"))).toBe(true);
+    expect(git(clone, "stash", "list")).toMatch(/agentforge-update/);
+    expect(fs.readFileSync(path.join(clone, "a.txt"), "utf8")).toBe("one\n");
+  });
 });
+
+describe("Updater from releases", () => {
+  const platform = "test-x64";
+  let root: string;
+  let home: string;
+  let files: Record<string, Buffer>;
+  let listing: unknown[];
+  let installs: string[];
+  let restarts: (RestartTarget | undefined)[];
+
+  /** A release package the way CI packs it: dist/cli.js at the top, plus package.json. */
+  function publish(version: string, opts: { prerelease?: boolean; corrupt?: boolean } = {}) {
+    const stage = fs.mkdtempSync(path.join(tmp, "pkg-"));
+    fs.mkdirSync(path.join(stage, "dist"));
+    fs.writeFileSync(path.join(stage, "dist", "cli.js"), "// cli\n");
+    fs.writeFileSync(path.join(stage, "package.json"), JSON.stringify({ version }));
+    const name = assetName(version, platform);
+    const archive = path.join(tmp, name);
+    execFileSync("tar", ["-czf", archive, "-C", stage, "."]);
+    const bytes = fs.readFileSync(archive);
+    const sum = crypto.createHash("sha256").update(opts.corrupt ? Buffer.from("other") : bytes).digest("hex");
+    files[`https://dl/${version}/${name}`] = bytes;
+    files[`https://dl/${version}/SHA256SUMS`] = Buffer.from(`${sum}  ${name}\n`);
+    listing.unshift({
+      tag_name: `v${version}`,
+      draft: false,
+      prerelease: !!opts.prerelease,
+      body: `- change in ${version}`,
+      assets: [
+        { name, browser_download_url: `https://dl/${version}/${name}` },
+        { name: "SHA256SUMS", browser_download_url: `https://dl/${version}/SHA256SUMS` },
+      ],
+    });
+  }
+
+  const fakeFetch = (async (url: string | URL) => {
+    const u = String(url);
+    if (u.includes("api.github.com")) return new Response(JSON.stringify(listing));
+    const body = files[u];
+    return body ? new Response(body) : new Response("missing", { status: 404 });
+  }) as typeof fetch;
+
+  const make = (r = root) =>
+    new Updater({
+      root: r,
+      home,
+      running: () => running,
+      reinstall: async () => undefined,
+      source: "release",
+      platform,
+      fetch: fakeFetch,
+      installFrom: async (cli) => void installs.push(cli),
+      restart: (target) => void restarts.push(target),
+    });
+
+  beforeEach(() => {
+    root = path.join(tmp, "checkout");
+    home = path.join(tmp, "home");
+    fs.mkdirSync(path.join(root, "dist"), { recursive: true });
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ version: "0.6.1" }));
+    files = {};
+    listing = [];
+    installs = [];
+    restarts = [];
+  });
+
+  it("moves a git checkout to the newest stable release, then restarts into it with a rollback", async () => {
+    publish("0.6.1");
+    publish("0.6.2");
+    publish("0.6.3-beta.0", { prerelease: true });
+    const u = make();
+    const checked = await u.check();
+    expect(checked).toMatchObject({ state: "available", source: "release", channel: "stable", local: "0.6.1", remote: "0.6.2" });
+    expect(checked.message).toMatch(/moves AgentForge from .* to a release install/);
+    expect(checked.notes).toContain("- change in 0.6.2");
+    expect(checked.notes).not.toContain("0.6.3-beta.0");
+
+    u.apply();
+    await u.settled();
+    const cli = path.join(home, "versions", "0.6.2", "dist", "cli.js");
+    expect(u.status()).toMatchObject({ state: "up_to_date", local: "0.6.2", apply: { ok: true, stage: "installed", from: "0.6.1", to: "0.6.2" } });
+    expect(fs.existsSync(cli)).toBe(true);
+    expect(installs).toEqual([cli]);
+    expect(restarts).toEqual([{ cli, rollback: path.join(root, "dist", "cli.js") }]);
+    expect(readReleaseState(home)).toEqual({ current: { version: "0.6.2", cli }, previous: { version: "0.6.1", cli: path.join(root, "dist", "cli.js") } });
+    expect(u.installedVersion()).toBe("0.6.2");
+    expect(u.restartTarget()).toEqual({ cli, rollback: path.join(root, "dist", "cli.js") });
+
+    const next = make(path.join(home, "versions", "0.6.2"));
+    expect((await next.check()).state).toBe("up_to_date");
+    next.settings({ channel: "beta" });
+    expect(await next.check()).toMatchObject({ state: "available", remote: "0.6.3-beta.0", channel: "beta" });
+  });
+
+  it("refuses a package whose checksum does not match and switches nothing", async () => {
+    publish("0.6.2", { corrupt: true });
+    const u = make();
+    u.apply();
+    await u.settled();
+    expect(u.status().apply).toMatchObject({ ok: false, to: "0.6.2" });
+    expect(u.status().message).toMatch(/Checksum mismatch.*Nothing was switched/);
+    expect(fs.existsSync(path.join(home, "versions", "0.6.2"))).toBe(false);
+    expect(readReleaseState(home)).toEqual({});
+    expect(installs).toEqual([]);
+  });
+
+  it("installs stable releases automatically when idle, never betas", async () => {
+    publish("0.6.2-beta.0", { prerelease: true });
+    const u = make();
+    u.settings({ channel: "beta" });
+    let stop = u.startAuto(60_000, 0);
+    await new Promise((r) => setTimeout(r, 300));
+    stop();
+    expect(u.status()).toMatchObject({ state: "available", remote: "0.6.2-beta.0" });
+    expect(installs).toEqual([]);
+
+    publish("0.6.2");
+    stop = u.startAuto(60_000, 0);
+    for (let i = 0; i < 50 && !installs.length; i++) await new Promise((r) => setTimeout(r, 100));
+    await u.settled();
+    stop();
+    expect(installs).toHaveLength(1);
+    expect(u.status().apply).toMatchObject({ ok: true, to: "0.6.2" });
+
+    u.settings({ auto: false });
+    expect(u.status().auto).toBe(false);
+
+    recordRollback(path.join(tmp, "home"), "backend did not start");
+    expect(u.status().apply).toMatchObject({ ok: false, rolledBack: true, to: "0.6.2", error: "backend did not start" });
+  });
+});
+

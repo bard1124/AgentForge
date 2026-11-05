@@ -51,13 +51,24 @@ Works on macOS and Windows (Linux as macOS). The commands are the same in a macO
 - **Claude Code CLI** (`claude` on `PATH`, or pass `--claude` at install). The board uses Claude Code's function hooks (early access): start Claude Code with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. Without them the MCP tools, the prompt hook, and the command-line settings still work.
 - **A Cursor account**: browser sign-in, or a `CURSOR_API_KEY`.
 
+**One-line install (recommended)**: downloads this platform's release package (dependencies included, SHA256-checked) into `~/.agentforge/versions/<version>`, registers the plugin, and starts the backend, which also covers step 3 below.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bard1124/AgentForge/main/scripts/install.sh | bash          # macOS / Linux
+irm https://raw.githubusercontent.com/bard1124/AgentForge/main/scripts/install.ps1 | iex                  # Windows PowerShell
+```
+
+`agentforge` below then means `node ~/.agentforge/versions/<version>/dist/cli.js`.
+
+**From source**:
+
 ```bash
 git clone https://github.com/bard1124/AgentForge.git
 cd AgentForge
 npm install && npm run build
 ```
 
-Keep the checkout: the plugin runs from its `dist/`. Below, `agentforge` means `node dist/cli.js`; after `npm link` the `agentforge` command works directly.
+A source install runs the plugin from the checkout's `dist/` and moves to a release install on its next update. Below, `agentforge` means `node dist/cli.js`; after `npm link` the `agentforge` command works directly.
 
 ### 2. Connect Cursor
 
@@ -115,7 +126,7 @@ Ask in the same session: "How's the Cursor task going?", "Ask it why it changed 
 
 - **SDD task documents**: with SDD on (default), Claude Code saves each task's goal, scope, plan, and acceptance as a `task.md` (`~/.agentforge/sdd` by default) before dispatching and hands the path to the agent. Saves are checked against the revision read, so a concurrent edit is refused instead of overwritten.
 - **Token savings (estimate)**: the board shows, for today, the last 7 days, and all time, (delegated − Claude) / delegated. Delegated is the tokens the executor used over each task's turns; Claude is the estimated tokens of every MCP tool exchange with AgentForge (arguments sent plus text returned, logged in `~/.agentforge/claude-traffic.jsonl`). It assumes Claude would have spent about what the worker spent and does not count Claude re-reading tool results later, so treat it as a rough figure; it can be negative.
-- **Plugin updates**: the board's **Plugin update** section, or `agentforge update status|check|apply`, fast-forwards this checkout from `origin`, rebuilds, and reinstalls, only when the checkout is clean and no task is running. **Update to latest** does it in one click and then restarts the backend; run `/reload-plugins` afterwards.
+- **Plugin updates**: the board's **Plugin update** section, or `agentforge update status|check|apply`, installs new versions from GitHub Releases: SHA256-checked, switched once no task runs, and rolled back if the new backend does not start. The details show what changed; stable releases install by themselves while idle (turn off in the details), and the Beta channel offers prereleases for manual install. **Update to latest** does it in one click and then restarts the backend; run `/reload-plugins` afterwards. Dev checkouts update by git; see [Advanced](docs/advanced.en.md#updates-and-uninstall).
 - **Shared backend**: all sessions and the board share one `agentforge-backend` (127.0.0.1 only, per-home token); tasks keep running after the dispatching session closes. `agentforge backend status` shows it.
 - **Monitor**: `agentforge monitor` (live terminal view) or `agentforge monitor --web` (read-only page on `http://127.0.0.1:18862`).
 

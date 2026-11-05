@@ -22,8 +22,9 @@ const ORDER_OF: Record<string, string> = { running: "executing", paused: "paused
 const taskRow = (id: string, title: string, status: string): Row => ({ id, title, status, orderStatus: ORDER_OF[status] ?? status, worker: "cursor", model: "composer-2.5", updatedAt: "" });
 
 /** An in-memory agentforge-backend answering the board's /api routes. */
-function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean; tasks?: Row[]; collapsed?: string[]; settingsDown?: boolean; installedCommit?: string } = {}) {
+function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean; tasks?: Row[]; collapsed?: string[]; settingsDown?: boolean; installedCommit?: string; update?: Record<string, unknown> } = {}) {
   const calls: Call[] = [];
+  const update: Record<string, unknown> = { state: "up_to_date", message: "Up to date.", local: "abc1234", remote: "abc1234", ...opts.update };
   const tasks = opts.tasks ?? [taskRow("t-1", "Build login", "running")];
   const settings: Record<string, unknown> = { enabled: false, executor: "cursor", sdd: { enabled: true, workspace: WS }, ...(opts.collapsed ? { board: { collapsed: opts.collapsed } } : {}) };
   let doc = { id: T1, title: "Login page", path: `${WS}/${P1}/${T1}/task.md`, revision: "r1", content: "# Login page\n" };
@@ -120,9 +121,14 @@ function backend(on: On, opts: { conflict?: boolean; savingsDown?: boolean; task
         doc = { ...doc, content: String(body!.content), revision: "r2" };
         return json(200, doc);
       case "GET /api/update":
-        return json(200, { state: "up_to_date", message: "Up to date.", local: "abc1234", remote: "abc1234", backendVersion: "0.4.0", installedVersion: "0.4.0", backendCommit: "abc1234", installedCommit: opts.installedCommit ?? "abc1234" });
+        return json(200, { ...update, backendVersion: "0.4.0", installedVersion: "0.4.0", backendCommit: "abc1234", installedCommit: opts.installedCommit ?? "abc1234" });
       case "POST /api/update/check-daily":
-        return json(200, { state: "up_to_date", message: "Up to date." });
+      case "POST /api/update/check":
+      case "POST /api/update/apply":
+        return json(200, update);
+      case "POST /api/update/settings":
+        Object.assign(update, body);
+        return json(200, update);
       default:
         return json(404, { error: `no route ${method} ${url.pathname}` });
     }
@@ -215,6 +221,50 @@ test("the update section checks daily and shows the local status", async ($, on)
   expect((await ui.find({ key: "upd-apply" }))?.text).toBe("Update to latest");
   expect(await ui.find({ key: "upd-check" })).toBeDefined();
   expect(await ui.find({ key: "upd-restart" })).toBeUndefined();
+  await ui.unmount();
+});
+
+test("checking with nothing new says so", async ($, on) => {
+  backend(on);
+  await openBoard($);
+  await $.command.run({ command: "forge-board", args: "", origin: { kind: "person" }, presentation: "default" } as never);
+  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
+  await ui.press({ key: "upd-open" });
+  await ui.press({ key: "upd-check" });
+  expect((await ui.find({ type: "Text", text: /is the latest/ }))?.text).toMatch(/v0\.4\.0/);
+  await ui.unmount();
+});
+
+test("local changes list the files and offer Stash & update", async ($, on) => {
+  const b = backend(on, { update: { state: "dirty", source: "git", message: "Local changes in /r", dirtyFiles: ["src/a.ts", "README.md"] } });
+  await openBoard($);
+  await $.command.run({ command: "forge-board", args: "", origin: { kind: "person" }, presentation: "default" } as never);
+  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
+  await ui.press({ key: "upd-open" });
+  expect((await ui.find({ type: "Text", text: /src\/a\.ts/ }))?.text).toMatch(/README\.md/);
+  expect(await ui.find({ key: "upd-apply" })).toBeUndefined();
+  await ui.press({ key: "upd-stash" });
+  expect(b.calls.some((c) => c.path === "/api/update/apply" && c.body?.stash === true)).toBe(true);
+  await ui.unmount();
+});
+
+test("a release install shows notes, a badge, the channel and auto-update, and a rollback", async ($, on) => {
+  const b = backend(on, {
+    update: { state: "available", source: "release", channel: "stable", auto: true, local: "0.4.0", remote: "0.5.0", notes: "- Faster retries\n- Doctor", message: "Version 0.5.0 is available.", apply: { ok: false, rolledBack: true, to: "0.4.9", error: "backend did not start" } },
+  });
+  await openBoard($);
+  await $.command.run({ command: "forge-board", args: "", origin: { kind: "person" }, presentation: "default" } as never);
+  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
+  expect((await ui.find({ type: "Text", text: /↑ Update/ }))?.text).toMatch(/0\.5\.0/);
+  await ui.press({ key: "upd-open" });
+  expect((await ui.find({ type: "Text", text: /Faster retries/ }))?.text).toMatch(/Doctor/);
+  expect((await ui.find({ type: "Text", text: /went back to the previous version/ }))?.text).toMatch(/v0\.4\.9/);
+  expect((await ui.find({ key: "upd-apply" }))?.text).toBe("Update to latest");
+  await ui.press({ key: "upd-channel-beta" });
+  expect(b.calls.some((c) => c.path === "/api/update/settings" && c.body?.channel === "beta")).toBe(true);
+  expect((await ui.find({ type: "Text", text: /prereleases too/ }))?.text).toBeDefined();
+  await ui.press({ key: "upd-auto-off" });
+  expect(b.calls.some((c) => c.path === "/api/update/settings" && c.body?.auto === false)).toBe(true);
   await ui.unmount();
 });
 

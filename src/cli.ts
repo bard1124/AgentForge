@@ -38,8 +38,9 @@ Usage:
                                     Board settings: enabled, executor, model, effort, permission, sdd, sdd-workspace
   agentforge uninstall [--claude <path>]
                                     Remove the plugin
-  agentforge update [status|check|apply]
-                                    Plugin updates from origin: fast-forward only, never with local changes or running tasks
+  agentforge update [status|check|apply [--stash]|settings [--channel=stable|beta] [--auto=on|off]]
+                                    Plugin updates: GitHub releases (checksum-verified, rolled back if the new backend fails),
+                                    or fast-forward of a dev checkout; never while tasks run
 
 Configuration is read from the environment, then from AGENTFORGE_ENV_FILE or
 ~/.agentforge/.env (see .env.example). Main variables:
@@ -168,7 +169,12 @@ function writeMarketplace(home: string): string {
   const install = { home, node: process.execPath, cli: entry };
   fs.writeFileSync(path.join(pluginDir, "hooks", "home.json"), `${JSON.stringify(install, null, 2)}\n`);
 
-  const { displayName, version, description } = JSON.parse(fs.readFileSync(path.join(root, "plugin", ".claude-plugin", "plugin.json"), "utf8"));
+  // package.json is the one version source; Claude Code shows and caches the plugin by the manifest's.
+  const { version } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as { version: string };
+  const manifestFile = path.join(pluginDir, ".claude-plugin", "plugin.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+  fs.writeFileSync(manifestFile, `${JSON.stringify({ ...manifest, version }, null, 2)}\n`);
+  const { displayName, description } = manifest;
   const marketplace = { name: MARKETPLACE, owner: { name: "AgentForge" }, plugins: [{ name: "agentforge", displayName, source: "./agentforge", version, description }] };
   fs.writeFileSync(path.join(dir, ".claude-plugin", "marketplace.json"), `${JSON.stringify(marketplace, null, 2)}\n`);
   return dir;
@@ -269,11 +275,27 @@ async function updateCommand(args: string[], config: ForgeConfig): Promise<numbe
   const backend = await import("./backend.js");
   const home = config.home;
   await backend.ensureBackend(home);
-  type Status = { state: string; message: string; busy?: string; local?: string; remote?: string; behind?: number; apply?: { ok: boolean; stage?: string; error?: string } };
+  type Status = {
+    state: string;
+    message: string;
+    busy?: string;
+    local?: string;
+    remote?: string;
+    behind?: number;
+    source?: string;
+    channel?: string;
+    auto?: boolean;
+    dirtyFiles?: string[];
+    notes?: string;
+    apply?: { ok: boolean; stage?: string; error?: string; rolledBack?: boolean };
+  };
   const show = (s: Status) => {
     out(`${s.state}: ${s.message}`);
-    if (s.local) out(`  local ${s.local}  origin ${s.remote ?? "?"}${s.behind ? `  (${s.behind} behind)` : ""}`);
-    if (s.apply) out(`  last install: ${s.apply.ok ? "ok" : `failed${s.apply.stage ? ` after ${s.apply.stage}` : ""}: ${s.apply.error ?? ""}`}`);
+    if (s.local) out(`  ${s.source === "release" ? "installed" : "local"} ${s.local}  ${s.source === "release" ? "latest" : "origin"} ${s.remote ?? "?"}${s.behind ? `  (${s.behind} behind)` : ""}`);
+    if (s.source === "release") out(`  channel ${s.channel ?? "stable"}  auto-update ${s.auto ? "on" : "off"}`);
+    for (const f of s.dirtyFiles ?? []) out(`  changed: ${f}`);
+    if (s.state === "available" && s.notes) out(`  what's new:\n${s.notes.split("\n").filter(Boolean).map((l) => `    ${l}`).join("\n")}`);
+    if (s.apply) out(`  last install: ${s.apply.ok ? "ok" : s.apply.rolledBack ? `rolled back: ${s.apply.error ?? ""}` : `failed${s.apply.stage ? ` after ${s.apply.stage}` : ""}: ${s.apply.error ?? ""}`}`);
   };
   switch (args[0] ?? "status") {
     case "status":
@@ -283,22 +305,52 @@ async function updateCommand(args: string[], config: ForgeConfig): Promise<numbe
       show(await backend.backendRequest<Status>(home, "POST", "/api/update/check"));
       return 0;
     case "apply": {
-      let s = await backend.backendRequest<Status>(home, "POST", "/api/update/apply");
+      let s = await backend.backendRequest<Status>(home, "POST", "/api/update/apply", { stash: args.includes("--stash") });
       if (s.busy !== "apply") {
         show(s);
         return 1;
       }
       out("Installing...");
-      while (s.busy) {
+      // A release install restarts the backend; polls during that gap fail and are retried.
+      for (let misses = 0; s.busy && misses < 60; ) {
         await new Promise((r) => setTimeout(r, 1000));
-        s = await backend.backendRequest<Status>(home, "GET", "/api/update");
+        try {
+          s = await backend.backendRequest<Status>(home, "GET", "/api/update");
+          misses = 0;
+        } catch {
+          misses++;
+        }
       }
       show(s);
       return s.apply?.ok ? 0 : 1;
     }
+    case "settings": {
+      const change: { channel?: string; auto?: boolean } = {};
+      for (const a of args.slice(1)) {
+        const [key, value] = a.replace(/^--/, "").split("=");
+        if (key === "channel" && (value === "stable" || value === "beta")) change.channel = value;
+        else if (key === "auto" && (value === "on" || value === "off")) change.auto = value === "on";
+        else throw new Error("Usage: agentforge update settings [--channel=stable|beta] [--auto=on|off]");
+      }
+      show(await backend.backendRequest<Status>(home, "POST", "/api/update/settings", change));
+      return 0;
+    }
     default:
-      throw new Error("Usage: agentforge update [status|check|apply]");
+      throw new Error("Usage: agentforge update [status|check|apply [--stash]|settings [--channel=stable|beta] [--auto=on|off]]");
   }
+}
+
+/** The new version's backend did not start: register and start the previous cli again. */
+async function rollBack(home: string, previous: string, error: string): Promise<number> {
+  const [{ recordRollback }, release] = await Promise.all([import("./updater.js"), import("./release.js")]);
+  recordRollback(home, error);
+  const state = release.readReleaseState(home);
+  if (state.previous) release.writeReleaseState(home, { current: state.previous });
+  const env = { ...process.env, AGENTFORGE_HOME: home, NODE_NO_WARNINGS: "1" };
+  execFileSync(process.execPath, [previous, "install"], { cwd: home, env, stdio: "ignore", timeout: 5 * 60_000 });
+  execFileSync(process.execPath, [previous, "backend", "start"], { cwd: home, env, stdio: "inherit", timeout: 60_000 });
+  console.error(`The new version did not start (${error.split("\n")[0]}); went back to ${previous}.`);
+  return 1;
 }
 
 async function backendCommand(args: string[], config: ForgeConfig): Promise<number> {
@@ -318,9 +370,15 @@ async function backendCommand(args: string[], config: ForgeConfig): Promise<numb
     case "start": {
       const after = Number(flag(args, "--after"));
       for (let i = 0; after && backend.isAlive(after) && i < 300; i++) await new Promise((r) => setTimeout(r, 100));
-      const { info } = await backend.ensureBackend(home);
-      out(`${backend.BACKEND_TITLE} running: pid ${info.pid}, 127.0.0.1:${info.port}, version ${info.version}`);
-      return 0;
+      const rollback = flag(args, "--rollback");
+      try {
+        const { info } = await backend.ensureBackend(home, rollback ? 30_000 : 20_000);
+        out(`${backend.BACKEND_TITLE} running: pid ${info.pid}, 127.0.0.1:${info.port}, version ${info.version}`);
+        return 0;
+      } catch (err) {
+        if (!rollback) throw err;
+        return rollBack(home, rollback, (err as Error).message);
+      }
     }
     case "status": {
       const info = await backend.probe(home);
