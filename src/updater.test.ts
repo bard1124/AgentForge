@@ -23,6 +23,9 @@ function commit(cwd: string, file: string, text: string) {
   git(cwd, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", file);
 }
 
+/** git on Windows checks files out with CRLF. */
+const read = (dir: string, file: string) => fs.readFileSync(path.join(dir, file), "utf8").replace(/\r\n/g, "\n");
+
 const noop: [string, string[]] = [process.execPath, ["-e", ""]];
 function updater(steps = { dependencies: noop, build: noop }) {
   return new Updater({ root: clone, home: path.join(tmp, "home"), running: () => running, reinstall: async () => void reinstalls++, steps, source: "git" });
@@ -152,7 +155,7 @@ describe("Updater", () => {
     u.apply();
     await u.settled();
     expect(u.status().apply).toMatchObject({ ok: true });
-    expect(fs.readFileSync(path.join(clone, "package-lock.json"), "utf8")).toBe("{\"lockfileVersion\":3}\n");
+    expect(read(clone, "package-lock.json")).toBe("{\"lockfileVersion\":3}\n");
 
     fs.writeFileSync(path.join(clone, "a.txt"), "mine\n");
     const dirty = await u.check();
@@ -170,7 +173,7 @@ describe("Updater", () => {
     expect(u.status().apply).toMatchObject({ ok: true });
     expect(fs.existsSync(path.join(clone, "b.txt"))).toBe(true);
     expect(git(clone, "stash", "list")).toMatch(/agentforge-update/);
-    expect(fs.readFileSync(path.join(clone, "a.txt"), "utf8")).toBe("one\n");
+    expect(read(clone, "a.txt")).toBe("one\n");
   });
 });
 
