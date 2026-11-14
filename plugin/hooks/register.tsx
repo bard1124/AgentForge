@@ -499,7 +499,7 @@ function executorSection($: EngineInterface, c: Ctx, m: BoardModel) {
 
 /** Task rows the card shows at once; ▲ / ▼ move the window, the kit has no scrolling container. */
 const TASK_PAGE = 8;
-const deletable = (t: TaskRow) => t.status !== "running" && t.status !== "queued" && t.status !== "paused";
+const deletable = (t: TaskRow) => t.status !== "running" && t.status !== "queued" && t.status !== "paused" && t.status !== "blocked";
 
 /** Delete with a confirm step: the button turns into Confirm / Keep. */
 function confirmDelete($: EngineInterface, c: Ctx, m: BoardModel, target: string, key: string, label: string, method: string, route: string) {
@@ -534,6 +534,7 @@ function taskControls($: EngineInterface, c: Ctx, m: BoardModel, t: TaskRow) {
   );
   if (t.status === "running") return [press("task-pause", "Pause", "POST", `/api/tasks/${id}/pause`), press("task-cancel", "Cancel", "POST", `/api/tasks/${id}/cancel`)];
   if (t.status === "paused") return [press("task-resume", "Resume", "POST", `/api/tasks/${id}/resume`), press("task-cancel", "Cancel", "POST", `/api/tasks/${id}/cancel`)];
+  if (t.status === "blocked") return press("task-cancel", "Cancel", "POST", `/api/tasks/${id}/cancel`);
   if (deletable(t)) return confirmDelete($, c, m, t.id, `task-delete-${t.id}`, "Delete", "DELETE", `/api/tasks/${id}`);
   return null;
 }
@@ -572,6 +573,8 @@ function tasksSection($: EngineInterface, c: Ctx, m: BoardModel, controls: boole
           <Box flexDirection="row" columnGap="xs" alignItems="center" flexShrink={1}>
             <Text size="footnote" dimColor mono wrap="truncate-end">{`${t.id}${t.updatedAt ? ` · ${stamp(t.updatedAt)}` : ""}`}</Text>
             {estimateLine(c, t)}
+            {t.hold ? <Text size="footnote" color="warning" wrap="truncate-end">{`${t.hold.kind === "question" ? "ASK" : "BLOCKED"}: ${t.hold.text}`}</Text> : null}
+            {t.status === "paused" && t.touched?.length ? <Text size="footnote" dimColor wrap="truncate-end">{`changed: ${t.touched.slice(0, 4).join(", ")}`}</Text> : null}
           </Box>,
           <Box flexDirection="row" columnGap="xs" alignItems="center">
             <Text size="footnote" color={STATUS_COLOR[t.orderStatus] ?? "inactive"}>●</Text>

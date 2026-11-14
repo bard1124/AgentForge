@@ -183,6 +183,8 @@ route("GET", "/api/tasks", (ctx, _body, url) => {
       estimateSource: t.estimate?.source,
       estimateBasis: t.estimate?.basis,
       elapsedMs: elapsedMs(t),
+      hold: t.hold,
+      touched: t.touched,
     }));
 });
 

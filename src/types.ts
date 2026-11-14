@@ -14,7 +14,9 @@ export type TaskStatus =
   | "cancelled"
   | "interrupted"
   | "accepted"
-  | "rejected";
+  | "rejected"
+  /** The worker stopped for a decision or a question. Not running; a follow-up answers it. */
+  | "blocked";
 
 export type StepKind = "say" | "think" | "tool" | "status" | "task" | "user" | "verify" | "error";
 
@@ -46,6 +48,8 @@ export interface Turn {
   autoRetry?: boolean;
   /** Started by Forge to carry on with the slice the worker named after `NEXT:`. */
   autoContinue?: boolean;
+  /** Started on a new agent because the previous session had grown past the handoff limit. */
+  autoHandoff?: boolean;
   durationMs?: number;
   usage?: TokenUsage;
 }
@@ -65,6 +69,12 @@ export interface Verification {
   passed: boolean;
   durationMs: number;
   outputTail: string;
+}
+
+/** Why a blocked task is waiting. `question` is an ASK the user answers; `blocked` needs a decision. */
+export interface TaskHold {
+  kind: "blocked" | "question";
+  text: string;
 }
 
 export interface Task {
@@ -128,6 +138,16 @@ export interface Task {
   queuedBrief?: string;
   /** When Forge told the worker to stop exploring and start editing. */
   nudgedAt?: string;
+  /** Set when the worker ended with BLOCKED: or ASK:; cleared when the next turn starts. */
+  hold?: TaskHold;
+  /** This task was dispatched for that parent, which is told once every child has stopped. */
+  parentId?: string;
+  /** Child-status signature already reported to this parent, so the same set is not sent twice. */
+  childReport?: string;
+  /** First turn index of the current agent session; a handoff starts a new one. */
+  sessionFrom?: number;
+  /** The agent to return to after a silent retry that ran on the backup model. */
+  modelSwap?: { agentId: string; model: string };
 }
 
 export interface ChangeSummary {

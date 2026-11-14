@@ -644,7 +644,7 @@ describe("Forge", () => {
     await expect(forge.dispatch({ task: "t", cwd: repo, worker: "codex" })).rejects.toThrow(/Unknown worker "codex". Available: cursor/);
   });
 
-  it("marks tasks from a dead server as interrupted and resumes the agent on follow-up", async () => {
+  it("pauses a dead server's task when its agent can be continued, and leaves one that never started uncertain", async () => {
     const store = new TaskStore(home);
     const worker = new FakeWorker(() => ({ messages: [], result: { status: "finished", result: "resumed" } }));
     const first = makeForge(worker);
@@ -657,12 +657,115 @@ describe("Forge", () => {
     orphan.turns.at(-1)!.status = "running";
     store.save(orphan);
 
+    orphan.touched = ["a.txt"];
+    store.save(orphan);
+
     const second = makeForge(worker);
-    expect(second.get(task.id).status).toBe("interrupted");
+    expect(second.get(task.id).status).toBe("paused");
+    expect(second.status(task.id).hint).toMatch(/backend restarted[\s\S]*a\.txt/);
     expect(await second.followup(task.id, "continue")).toBe("started");
     await second.wait(task.id, 5);
     expect(worker.resumed).toEqual(["agent-1"]);
     expect(second.get(task.id).status).toBe("finished");
+
+    const fresh = store.get(task.id)!;
+    fresh.status = "running";
+    fresh.ownerPid = 999_999;
+    delete fresh.agentId;
+    fresh.turns.at(-1)!.status = "running";
+    store.save(fresh);
+    expect(makeForge(worker).get(task.id).status).toBe("interrupted");
+  });
+
+  it("stops on ASK or BLOCKED and continues only through a follow-up", async () => {
+    const worker = new FakeWorker((_cwd, prompt) => ({
+      messages: [],
+      result: { status: "finished", result: prompt.includes("which file") ? "done" : "need a name\nASK: which file?" },
+    }));
+    const forge = makeForge(worker);
+    const { task } = await forge.dispatch({ task: "rename", cwd: repo });
+    await forge.wait(task.id, 5);
+    expect(forge.get(task.id).status).toBe("blocked");
+    expect(forge.status(task.id).hold).toEqual({ kind: "question", text: "which file?" });
+    expect(forge.status(task.id).orderStatus).toBe("blocked");
+    expect(forge.status(task.id).hint).toMatch(/forge_followup/);
+    await expect(forge.retry(task.id)).rejects.toThrow(/forge_followup/);
+
+    expect(await forge.followup(task.id, "which file? a.txt")).toBe("started");
+    await forge.wait(task.id, 5);
+    expect(forge.get(task.id).status).toBe("finished");
+    expect(forge.get(task.id).hold).toBeUndefined();
+  });
+
+  it("doubles the silence limit after a retry and uses the backup model for that turn only", async () => {
+    let round = 0;
+    const worker = new FakeWorker(() => {
+      round += 1;
+      if (round === 1) return { messages: [], result: { status: "finished", result: "never" }, holdUntil: new Promise<void>(() => undefined) };
+      if (round === 2) return { messages: [], result: { status: "finished", result: "ok" }, holdUntil: new Promise<void>((r) => setTimeout(r, 300)) };
+      return { messages: [], result: { status: "finished", result: "later" } };
+    });
+    const forge = makeForge(worker, { stallRecoverMs: 200, backupModel: "fast-model" });
+    const { task } = await forge.dispatch({ task: "do it", cwd: repo });
+    await forge.wait(task.id, 5);
+    const t = forge.get(task.id);
+    expect(t.status).toBe("finished");
+    expect(t.turns).toHaveLength(2);
+    expect(t.turns[1]?.autoRetry).toBe(true);
+    expect(t.model).toBe("composer-2.5");
+    expect(worker.sessionOpts.map((o) => o.model)).toEqual(["composer-2.5", "fast-model"]);
+
+    await forge.followup(task.id, "once more");
+    await forge.wait(task.id, 5);
+    expect(worker.sessionOpts.at(-1)?.model).toBe("composer-2.5");
+    expect(worker.resumed).toEqual(["agent-1"]);
+    expect(forge.get(task.id).modelSwap).toBeUndefined();
+  });
+
+  it("hands a long session to a new agent with the files and the remaining work", async () => {
+    let round = 0;
+    const worker = new FakeWorker(() => {
+      round += 1;
+      return {
+        messages: [tool(`e${round}`, "completed", { path: "a.txt" })],
+        result: { status: "finished", result: round < 2 ? "edited\nNEXT: the rest" : "report" },
+      };
+    });
+    const forge = makeForge(worker, { handoffSteps: 1, handoffTokens: 0 });
+    const { task } = await forge.dispatch({ task: "long", cwd: repo });
+    await forge.wait(task.id, 5);
+    const t = forge.get(task.id);
+    expect(t.status).toBe("finished");
+    expect(t.turns[1]?.autoHandoff).toBe(true);
+    expect(worker.prompts[1]).toMatch(/new agent taking over/);
+    expect(worker.prompts[1]).toMatch(/a\.txt/);
+    expect(worker.resumed).toEqual([]);
+    expect(worker.sessionOpts).toHaveLength(2);
+  });
+
+  it("tells the parent once every child has stopped", async () => {
+    let releaseA!: () => void;
+    let releaseB!: () => void;
+    const worker = new FakeWorker((_cwd, prompt) => {
+      if (prompt.includes("## Task\nchild a")) return { messages: [], result: { status: "finished", result: "a" }, holdUntil: new Promise<void>((r) => (releaseA = r)) };
+      if (prompt.includes("## Task\nchild b")) return { messages: [], result: { status: "finished", result: "b" }, holdUntil: new Promise<void>((r) => (releaseB = r)) };
+      return { messages: [], result: { status: "finished", result: "ok" } };
+    });
+    const forge = makeForge(worker);
+    const parent = await forge.dispatch({ task: "parent work", cwd: repo });
+    await forge.wait(parent.task.id, 5);
+    const a = await forge.dispatch({ task: "child a", cwd: repo, parentId: parent.task.id });
+    const b = await forge.dispatch({ task: "child b", cwd: repo, parentId: parent.task.id });
+    releaseA();
+    await forge.wait(a.task.id, 5);
+    expect(forge.get(parent.task.id).turns).toHaveLength(1);
+
+    releaseB();
+    await forge.wait(b.task.id, 5);
+    await forge.wait(parent.task.id, 5);
+    expect(forge.get(parent.task.id).turns).toHaveLength(2);
+    expect(worker.prompts.at(-1)).toMatch(new RegExp(`${a.task.id}[\\s\\S]*${b.task.id}|${b.task.id}[\\s\\S]*${a.task.id}`));
+    await expect(forge.dispatch({ task: "orphan", cwd: repo, parentId: "missing" })).rejects.toThrow(/No parent task/);
   });
 });
 
@@ -759,6 +862,13 @@ describe("orders and the board", () => {
     record.status = "running";
     record.ownerPid = 999_999_999;
     store.save(record);
+    // The agent already exists, so a dead owner is paused and can be continued.
+    expect(makeForge(new FakeWorker(finished)).status(task.id).orderStatus).toBe("paused");
+    const again = store.get(task.id)!;
+    again.status = "running";
+    again.ownerPid = 999_999_999;
+    delete again.agentId;
+    store.save(again);
     expect(makeForge(new FakeWorker(finished)).status(task.id).orderStatus).toBe("uncertain");
   });
 

@@ -37,6 +37,8 @@ export type TaskRow = {
   estimateBasis?: string;
   /** Worker running time, the running turn included. */
   elapsedMs?: number;
+  hold?: { kind: "blocked" | "question"; text: string };
+  touched?: string[];
 };
 
 export type UpdateView = {

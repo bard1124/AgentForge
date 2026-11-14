@@ -152,6 +152,10 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
             "worktree: the agent works in its own git worktree (from HEAD; uncommitted and ignored files such as node_modules are not there). " +
               "Use it when several tasks run in one repo at once. forge_accept applies the changes back to cwd as uncommitted edits; a conflict keeps the worktree and a patch.",
           ),
+        parent_id: z
+          .string()
+          .optional()
+          .describe("Task id of the parent. When every direct child has stopped, the parent is told once. Continue a child with forge_followup, which keeps its agent and order_id."),
       },
     },
     handle("forge_dispatch", async (a) => {
@@ -171,6 +175,7 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
         maxTurns: a.max_turns,
         maxMinutes: a.max_minutes,
         isolation: a.isolation,
+        parentId: a.parent_id,
       });
       return {
         task_id: task.id,
@@ -201,7 +206,9 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
       title: "Check task progress",
       description:
         "Snapshot of a task: status, current turn, recent steps (tool calls, messages, thinking), idle time, budget used, and token usage. " +
-        "Pass `since` = previous lastSeq to get only new steps. orderStatus is one of queued, dispatching, executing, paused, completed, failed, blocked, cancelled, uncertain (paused: the user stopped it on the board; do not re-dispatch); agentId is the native conversation id.",
+        "Pass `since` = previous lastSeq to get only new steps. orderStatus is one of queued, dispatching, executing, paused, completed, failed, blocked, cancelled, uncertain. " +
+        "blocked with hold.kind question means the worker asked (ASK); answer with forge_followup on this task. blocked otherwise needs a decision the same way. " +
+        "paused after a backend restart lists touched files; continue it, do not re-dispatch. agentId is the native conversation id.",
       inputSchema: {
         ...lookup,
         since: z.number().int().min(0).optional().describe("Return steps with seq greater than this."),
@@ -239,7 +246,8 @@ export function createServer(forge: Forge, defaultCwd: string, config: ForgeConf
     {
       title: "Follow up with the worker",
       description:
-        "Send a message to the task's agent with full conversation context: answer its question, ask for changes, or ask about its work. " +
+        "Send a message to the task's agent with full conversation context: answer its ASK, resolve a BLOCKED stop, ask for changes, or ask about its work. " +
+        "This keeps the same agent and order_id; do not dispatch a new task to reassign work. " +
         "If it is mid-turn the message is steered into the turn when possible, otherwise queued for right after it.",
       inputSchema: { task_id: taskId, message: z.string().min(1) },
     },

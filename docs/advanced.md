@@ -83,7 +83,15 @@ status、wait、result 和 cancel 都接受 `task_id` 或 `order_id`。在 Claud
 
 worker 若一直在读代码、迟迟不动手（默认 15 次工具调用或 10 分钟仍没有编辑），AgentForge 会提醒它一次立即开始实现，`forge_status` 也会提示“still exploring”。同时运行的 worker 默认最多 2 个，多出的任务以 `queued` 状态排队，有空位后自动启动；排队中的任务可以 `forge_cancel`。task 与 context 合计超过约 4,000 字符时，派发会返回警告；超过 8,000 字符直接拒绝，要求拆成每次一个区域的小任务，或把完整需求放进 SDD 文档再引用路径。
 
-某一轮如果没有工具在执行、却超过 4 分钟没有任何事件（包括刚 RUNNING 就不再输出的情况），AgentForge 判定连接或模型后端卡死，会取消这一轮，换新连接在同一个 agent 上续跑。这次续跑计入上面的自动续跑次数。有工具在执行时（例如长时间构建）阈值放宽到 15 分钟，以便同时兜住命令卡死和工具回执丢失。静默期间 `forge_status` 会提示主会话继续等待，不要手动取消。
+某一轮如果没有工具在执行、却超过 4 分钟没有任何事件（包括刚 RUNNING 就不再输出的情况），AgentForge 判定连接或模型后端卡死，会取消这一轮，换新连接在同一个 agent 上续跑。这次续跑计入上面的自动续跑次数。有工具在执行时（例如长时间构建）阈值放宽到 15 分钟，以便同时兜住命令卡死和工具回执丢失。思考输出和工具回执都会重新计时。每次自动续跑把这次静默阈值翻倍，最多 4 倍（4 分钟、8 分钟、16 分钟）。设了 `AGENTFORGE_BACKUP_MODEL` 时，这次静默续跑改用那个模型，下一轮回到原来的模型和 agent。静默期间 `forge_status` 会提示主会话继续等待，不要手动取消。
+
+worker 在最后一行写 `ASK: <一个问题>` 时，任务变为 `blocked`，看板上显示问题，不再重试。用 `forge_followup` 把答案送回同一个 agent。最后一行写 `BLOCKED: <缺什么>` 时同样停下，表示它做不下去，需要一个决定，这和连接断开不是一回事。
+
+当前 agent 会话里完成的工具调用达到 40 次，或报告的 token 达到 8 万时，下一次继续会关掉这个会话，换一个新 agent，只交接已改的文件、diff 和剩下的工作。`AGENTFORGE_HANDOFF_STEPS=0` 和 `AGENTFORGE_HANDOFF_TOKENS=0` 可分别关闭。
+
+`forge_dispatch` 的 `parent_id` 把任务挂到一个父任务上。所有直接子任务都停下后，父任务会收到一次汇总。继续某个子任务用 `forge_followup`，沿用原来的 agent 和 `order_id`，不要重新派发。
+
+后台重启时，还留着 agent 的运行中任务变成 `paused`，看板上可以继续，并列出已经改过的文件，不会自动接着跑。从未启动的任务仍是 `uncertain`。
 
 `agentforge doctor` 检查后台、认证和代理环境变量，并用看板当前的执行端和模型在临时目录里跑一个极小的探测轮次，报告创建 agent、首个事件和完成各用了多久。首个事件超过 60 秒视为连接慢，长任务很可能被中断；退出码 0 表示正常，2 表示慢，1 表示失败。可用 `--model` 换模型、`--timeout` 改时限（默认 180 秒）。
 
@@ -145,8 +153,11 @@ worker 可以从 `~/.agentforge/mcp.json`（或 `AGENTFORGE_MCP_CONFIG`）列出
 | `AGENTFORGE_MAX_REWORK` | `3` | 验证失败后的自动返工轮数 |
 | `AGENTFORGE_VERIFY_TIMEOUT_SEC` | `900` | 验证命令超时 |
 | `AGENTFORGE_STALL_WARN_SEC` | `120` | worker 静默多久后 `forge_status` 提示可能卡住 |
-| `AGENTFORGE_STALL_RECOVER_SEC` | `240` | 无工具执行时静默多久自动取消并续跑；`0` 关闭 |
-| `AGENTFORGE_STALL_RECOVER_TOOL_SEC` | `900` | 有工具显示执行中时静默多久自动取消并续跑；`0` 关闭 |
+| `AGENTFORGE_STALL_RECOVER_SEC` | `240` | 无工具执行时静默多久自动取消并续跑；每次自动续跑翻倍，最多 4 倍；`0` 关闭 |
+| `AGENTFORGE_STALL_RECOVER_TOOL_SEC` | `900` | 有工具显示执行中时静默多久自动取消并续跑；同样翻倍；`0` 关闭 |
+| `AGENTFORGE_BACKUP_MODEL` | - | 静默续跑这一轮使用的模型；下一轮回到任务原来的模型 |
+| `AGENTFORGE_HANDOFF_STEPS` | `40` | 当前会话完成这么多次工具调用后，下一轮换一个新 agent；`0` 关闭 |
+| `AGENTFORGE_HANDOFF_TOKENS` | `80000` | 或当前会话报告的 token 达到此数后换 agent；`0` 关闭 |
 | `AGENTFORGE_START_TIMEOUT_SEC` | `300` | 创建 agent 和每次开始运行的时限 |
 | `AGENTFORGE_AUTO_RETRY` | `3` | 因连接错误失败的轮次自动续跑的次数（最多 3）；`0` 关闭 |
 | `AGENTFORGE_AUTO_RETRY_DELAY_SEC` | `5` | 首次自动续跑前的等待，之后每次翻倍 |

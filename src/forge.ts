@@ -9,7 +9,7 @@ import { StepRecorder, truncate } from "./events.js";
 import { addWorktree, applyPatch, captureBaseline, diffFor, removeWorktree, summarizeChanges, worktreePatch } from "./git.js";
 import { loadMcpServers, McpConfigError, pickMcpServers } from "./mcp-config.js";
 import { historyEstimate, parseWorkerEstimate } from "./estimate.js";
-import { buildBrief, buildContinuePrompt, buildResumePrompt, buildReworkPrompt, EXPLORE_NUDGE, nextSlice, readProjectNotes, type ResumeState } from "./prompts.js";
+import { buildBrief, buildContinuePrompt, buildHandoffPrompt, buildResumePrompt, buildReworkPrompt, EXPLORE_NUDGE, nextSlice, readProjectNotes, workerHold, type ResumeState } from "./prompts.js";
 import { TaskStore } from "./store.js";
 import { type ChangeSummary, type OrderStatus, type Step, type Task, type Turn, type Verification } from "./types.js";
 import { runVerification } from "./verify.js";
@@ -37,6 +37,8 @@ export function orderStatus(task: Task): OrderStatus {
       return turn?.runId ? "executing" : "dispatching";
     case "paused":
       return "paused";
+    case "blocked":
+      return "blocked";
     case "finished":
     case "accepted":
       return "completed";
@@ -86,6 +88,8 @@ interface LiveTask {
   cancelling?: boolean;
   /** Set while waiting before an automatic retry; calling it ends the wait early. */
   backoff?: () => void;
+  /** Model for the turn being opened, when a silent retry uses the backup model. */
+  model?: string;
   waiters: Set<() => void>;
 }
 
@@ -115,6 +119,8 @@ export interface DispatchInput {
   maxMinutes?: number;
   /** "worktree": work in a git worktree of its own; accepting applies the changes back to `cwd`. */
   isolation?: "worktree";
+  /** Wake this task once every direct child has stopped. */
+  parentId?: string;
 }
 
 export interface BudgetView {
@@ -158,6 +164,11 @@ export interface StatusView {
   lastSeq: number;
   lastMessage?: string;
   hint: string;
+  /** Set while the worker is waiting on a decision or a question. */
+  hold?: Task["hold"];
+  parentId?: string;
+  /** Files the worker edited; shown when a restarted task is waiting to continue. */
+  touched?: string[];
 }
 
 export interface ResultView {
@@ -169,6 +180,7 @@ export interface ResultView {
   status: Task["status"];
   finalReport?: string;
   lastError?: string;
+  hold?: Task["hold"];
   changes: ChangeSummary;
   diff?: string;
   /** Tool calls replayed after a reconnect; check edited files for duplicated code. */
@@ -232,6 +244,8 @@ export function sumUsage(turns: Turn[]): UsageView | undefined {
  */
 export class Forge {
   private readonly live = new Map<string, LiveTask>();
+  /** Parents currently being told that their children stopped, so two children cannot report twice. */
+  private readonly reporting = new Set<string>();
   /** Called once a dispatched task has started; the backend opens its progress page here. */
   onDispatched?: (task: Task) => void;
 
@@ -247,13 +261,14 @@ export class Forge {
   private recoverOrphans(): void {
     for (const task of this.store.list()) {
       if ((task.status === "running" || task.status === "queued") && !isAlive(task.ownerPid)) {
-        task.status = "interrupted";
         for (const turn of task.turns) {
           if (turn.status === "running") {
             turn.status = "interrupted";
             turn.endedAt = now();
           }
         }
+        // A live agent can be continued from the board. One that never started stays uncertain.
+        task.status = task.agentId ? "paused" : "interrupted";
         task.updatedAt = now();
         this.store.save(task);
       }
@@ -383,6 +398,12 @@ export class Forge {
       );
     }
 
+    if (input.parentId) {
+      if (input.parentId === id) throw new ForgeError("A task cannot be its own parent.");
+      const parent = this.store.get(input.parentId);
+      if (!parent) throw new ForgeError(`No parent task ${input.parentId}.`);
+      if (parent.parentId) throw new ForgeError(`Task ${input.parentId} is itself a child; attach the new task to ${parent.parentId} instead.`);
+    }
     const task: Task = {
       id,
       orderId: input.orderId,
@@ -413,6 +434,7 @@ export class Forge {
       maxTaskMs: input.maxMinutes !== undefined ? input.maxMinutes * 60_000 : this.config.maxTaskMs,
       activeMs: 0,
       estimate: historyEstimate(this.list(), { cwd, model, brief }),
+      ...(input.parentId ? { parentId: input.parentId } : {}),
     };
     const live: LiveTask = { task, waiters: new Set() };
     this.live.set(task.id, live);
@@ -546,6 +568,9 @@ export class Forge {
       lastSeq: task.stepSeq,
       lastMessage: lastSay?.text,
       hint: this.statusHint(task, idleSec, lastError?.retryable, alreadyRetried),
+      hold: task.hold,
+      parentId: task.parentId,
+      touched: task.touched,
     };
   }
 
@@ -577,6 +602,7 @@ export class Forge {
   async followup(id: string, message: string): Promise<"started" | "steered" | "queued"> {
     const live = await this.claim(id);
     const { task } = live;
+    if (task.status === "blocked") delete task.hold;
     if (task.status === "running" && live.run) {
       if (live.run.steer && (await live.run.steer(message).catch(() => false))) {
         this.addStep(task, { kind: "user", text: `[steer] ${truncate(message, 300)}` });
@@ -597,7 +623,11 @@ export class Forge {
    * retry, the instruction it continued. A paused task is resumed.
    */
   async retry(id: string): Promise<Turn> {
-    if (this.get(id).status === "paused") return this.resume(id);
+    const current = this.get(id);
+    if (current.status === "blocked") {
+      throw new ForgeError(`Task ${id} is waiting (${current.hold?.kind === "question" ? "ASK" : "BLOCKED"}: ${current.hold?.text ?? ""}). Answer it with forge_followup on this task; do not retry or re-dispatch.`);
+    }
+    if (current.status === "paused") return this.resume(id);
     const live = await this.claim(id);
     const { task } = live;
     const last = task.turns.at(-1);
@@ -643,8 +673,9 @@ export class Forge {
   }
 
   async cancel(id: string, by: CancelSource = "forge_cancel"): Promise<Task> {
-    if (this.get(id).status === "paused") {
+    if (this.get(id).status === "paused" || this.get(id).status === "blocked") {
       const { task } = await this.claim(id);
+      delete task.hold;
       this.addStep(task, { kind: "status", text: `Cancelled ${CANCEL_SOURCE[by]}.` });
       const last = task.turns.at(-1);
       if (last?.status === "paused") last.status = "cancelled";
@@ -695,7 +726,7 @@ export class Forge {
 
   /** Deletes every task that is neither running nor paused; returns how many. */
   async clearFinished(): Promise<number> {
-    const done = this.list().filter((t) => t.status !== "running" && t.status !== "queued" && t.status !== "paused");
+    const done = this.list().filter((t) => t.status !== "running" && t.status !== "queued" && t.status !== "paused" && t.status !== "blocked");
     for (const task of done) await this.delete(task.id);
     return done.length;
   }
@@ -726,6 +757,7 @@ export class Forge {
       status: task.status,
       finalReport: lastFinished?.result,
       lastError,
+      hold: task.hold,
       changes,
       diff,
       ...(task.replayed?.length ? { replayed: task.replayed } : {}),
@@ -896,14 +928,16 @@ export class Forge {
     const { task } = live;
     const worker = this.workers[task.worker];
     if (!worker) throw new ForgeError(`Worker "${task.worker}" is not available.`);
-    const opts = { cwd: task.cwd, model: task.model, modelParams: task.modelParams, mcpServers: this.resolveMcp(task.mcpServers ?? []), permission: task.permission };
+    const opts = { cwd: task.cwd, model: live.model ?? task.model, modelParams: task.modelParams, mcpServers: this.resolveMcp(task.mcpServers ?? []), permission: task.permission };
     live.session = task.agentId ? await worker.resume(task.agentId, opts) : await worker.create(opts);
     task.agentId = live.session.agentId;
     return live.session;
   }
 
-  private async startTurn(live: LiveTask, prompt: string, auto?: "autoRetry" | "autoContinue"): Promise<void> {
+  private async startTurn(live: LiveTask, prompt: string, auto?: "autoRetry" | "autoContinue" | "autoHandoff", model?: string): Promise<void> {
     const { task } = live;
+    await this.applyTurnModel(live, model);
+    delete task.hold;
     const budget = this.budgetOf(task);
     if (budget.exhausted) {
       throw new ForgeError(
@@ -960,7 +994,7 @@ export class Forge {
           if (silent || live.pausing || live.cancelling) return;
           const idle = Date.now() - Date.parse(task.lastEventAt ?? turn.startedAt);
           const tool = this.currentTool(task);
-          const limit = tool ? toolMs : recoverMs;
+          const limit = this.silenceLimitMs(task, !!tool);
           if (limit <= 0 || idle < limit) return;
           silent = { sec: Math.round(idle / 1000), tool: tool && `${tool.tool} call (${truncate(tool.text, 120)})` };
           const why = silent.tool ? `while its ${silent.tool} shows as running (a hung command or a lost tool result)` : "and no tool call running";
@@ -1017,23 +1051,34 @@ export class Forge {
     }
     live.run = undefined;
     const exhausted = !!this.budgetOf(task).exhausted;
+    const hold = turn.status === "finished" && !stopping && !overBudget ? workerHold(turn.result) : undefined;
     const retries = this.trailingAutoRetries(task);
     // Past the first retry, only a turn that got something done earns another; a dead connection just fails again.
     const autoRetry =
-      turn.status === "error" && !!turn.retryable && !stopping && !exhausted && retries < this.config.autoRetry && (retries === 0 || completed.size > 0);
-    const slice = turn.status === "finished" && this.config.slices ? nextSlice(turn.result) : undefined;
+      !hold && turn.status === "error" && !!turn.retryable && !stopping && !exhausted && retries < this.config.autoRetry && (retries === 0 || completed.size > 0);
+    const slice = !hold && turn.status === "finished" && this.config.slices ? nextSlice(turn.result) : undefined;
     const carryOn = !!slice && !stopping && !exhausted && task.pending.length === 0;
-    // Stays running across an automatic retry or slice, so a poll in between never reports a stop.
-    task.status = autoRetry || carryOn ? "running" : turn.status;
+    // A queued follow-up starts on the next tick; keep running so a poll or wait() in that gap does not see a stop.
+    const queued = !hold && !stopping && !overBudget && task.pending.length > 0;
+    if (hold) {
+      task.hold = hold;
+      task.status = "blocked";
+      task.pending = [];
+    } else {
+      // Stays running across an automatic retry, slice, or queued follow-up, so a poll in between never reports a stop.
+      task.status = autoRetry || carryOn || queued ? "running" : turn.status;
+    }
     if (turn.error) this.addStep(task, { kind: "error", text: truncate(turn.error, 300) });
+    if (hold) this.addStep(task, { kind: "status", text: `${hold.kind === "question" ? "ASK" : "BLOCKED"}: ${truncate(hold.text, 200)}` });
     if (slice && exhausted) this.addStep(task, { kind: "status", text: `The worker planned another slice (${truncate(slice, 160)}) but the task budget is used up.` });
     this.persist(task);
 
     if (autoRetry) {
       const delayMs = this.config.autoRetryDelayMs * 2 ** retries;
+      const backup = silent && this.config.backupModel && this.config.backupModel !== task.model ? this.config.backupModel : undefined;
       this.addStep(task, {
         kind: "status",
-        text: `Transient connection error; continuing automatically on the same agent (attempt ${retries + 1} of ${this.config.autoRetry})${delayMs ? ` in ${Math.round(delayMs / 1000)}s` : ""}.`,
+        text: `Transient connection error; continuing automatically ${backup ? `on ${backup}` : "on the same agent"} (attempt ${retries + 1} of ${this.config.autoRetry})${delayMs ? ` in ${Math.round(delayMs / 1000)}s` : ""}.`,
       });
       await live.session?.close().catch(() => undefined);
       live.session = undefined;
@@ -1046,7 +1091,7 @@ export class Forge {
         this.persist(task);
       } else {
         try {
-          await this.startTurn(live, buildResumePrompt(await this.resumeState(task, turn)), "autoRetry");
+          await this.startTurn(live, buildResumePrompt(await this.resumeState(task, turn)), "autoRetry", backup);
           return;
         } catch (err) {
           this.addStep(task, { kind: "error", text: `Automatic retry failed to start: ${(err as Error).message}` });
@@ -1056,7 +1101,7 @@ export class Forge {
     } else if (carryOn) {
       this.addStep(task, { kind: "status", text: `Slice done; continuing with: ${truncate(slice, 200)}` });
       try {
-        await this.startTurn(live, buildContinuePrompt(slice), "autoContinue");
+        await this.beginTurn(live, buildContinuePrompt(slice!), "autoContinue", turn);
         return;
       } catch (err) {
         task.status = turn.status;
@@ -1065,18 +1110,114 @@ export class Forge {
       }
     }
 
-    const next = task.status === "paused" || task.status === "cancelled" ? undefined : task.pending.shift();
+    const next = task.status === "paused" || task.status === "cancelled" || task.status === "blocked" ? undefined : task.pending.shift();
     if (next !== undefined) {
       try {
-        await this.startTurn(live, next);
+        await this.beginTurn(live, next, undefined, turn);
         return;
       } catch (err) {
         this.addStep(task, { kind: "error", text: `Queued follow-up failed to start: ${(err as Error).message}` });
         this.persist(task);
       }
     }
+    await this.reportChildren(task);
     for (const notify of [...live.waiters]) notify();
     this.pumpQueue();
+  }
+
+  /** Silence allowed before a turn is restarted. Each automatic retry doubles it, up to 4×. */
+  private silenceLimitMs(task: Task, toolRunning: boolean): number {
+    const base = toolRunning ? this.config.stallRecoverToolMs : this.config.stallRecoverMs;
+    if (base <= 0) return 0;
+    return base * 2 ** Math.min(this.trailingAutoRetries(task), 2);
+  }
+
+  /** The next turn of a long session starts on a new agent; a connection retry keeps the current one. */
+  private async beginTurn(live: LiveTask, prompt: string, auto: "autoContinue" | "autoHandoff" | undefined, turn: Turn): Promise<void> {
+    const { task } = live;
+    if (this.needsHandoff(task)) {
+      await this.rotateSession(live);
+      task.sessionFrom = task.turns.length + 1;
+      prompt = buildHandoffPrompt({ ...(await this.resumeState(task, turn)), remaining: prompt });
+      auto = "autoHandoff";
+      this.addStep(task, { kind: "status", text: "The session is long; continuing on a new agent with the files and the remaining work." });
+    }
+    await this.startTurn(live, prompt, auto);
+  }
+
+  private needsHandoff(task: Task): boolean {
+    const { handoffSteps, handoffTokens } = this.config;
+    if (handoffSteps <= 0 && handoffTokens <= 0) return false;
+    const size = this.sessionSize(task);
+    return (handoffSteps > 0 && size.steps >= handoffSteps) || (handoffTokens > 0 && size.tokens >= handoffTokens);
+  }
+
+  private sessionSize(task: Task): { steps: number; tokens: number } {
+    const from = task.sessionFrom ?? 1;
+    const steps = task.steps.filter((s) => s.kind === "tool" && s.toolStatus === "completed" && s.turn >= from).length;
+    const tokens = task.turns.filter((t) => t.index >= from).reduce((n, t) => n + (t.usage?.totalTokens ?? 0), 0);
+    return { steps, tokens };
+  }
+
+  /** Drops the current agent so the next openSession creates a new one. */
+  private async rotateSession(live: LiveTask): Promise<void> {
+    const { task } = live;
+    delete task.modelSwap;
+    await live.session?.close().catch(() => undefined);
+    live.session = undefined;
+    live.model = undefined;
+    delete task.agentId;
+  }
+
+  /** A silent retry may run on the backup model; the turn after that returns to the task's model and agent. */
+  private async applyTurnModel(live: LiveTask, override?: string): Promise<void> {
+    const { task } = live;
+    if (override && override !== task.model) {
+      if (!task.modelSwap && task.agentId) task.modelSwap = { agentId: task.agentId, model: task.model };
+      await live.session?.close().catch(() => undefined);
+      live.session = undefined;
+      delete task.agentId;
+      live.model = override;
+      return;
+    }
+    if (task.modelSwap) {
+      await live.session?.close().catch(() => undefined);
+      live.session = undefined;
+      task.agentId = task.modelSwap.agentId;
+      delete task.modelSwap;
+      live.model = undefined;
+    }
+  }
+
+  /** Once every direct child has stopped, tell the parent once. A running or waiting parent gets it queued. */
+  private async reportChildren(child: Task): Promise<void> {
+    const parentId = child.parentId;
+    if (!parentId || this.reporting.has(parentId)) return;
+    const kids = this.store.list().filter((t) => t.parentId === parentId);
+    const open = (status: Task["status"]) => status === "queued" || status === "running" || status === "paused";
+    if (kids.some((t) => open(t.status))) return;
+    const parent = this.store.get(parentId);
+    if (!parent || parent.status === "cancelled") return;
+    const signature = kids.map((t) => `${t.id}:${t.status}:${t.hold?.text ?? ""}`).sort().join("|");
+    if (parent.childReport === signature) return;
+    this.reporting.add(parentId);
+    try {
+      parent.childReport = signature;
+      const lines = kids.map((t) => `- ${t.id} ${t.title}: ${orderStatus(t)}${t.hold ? ` — ${t.hold.text}` : ""}`).join("\n");
+      const message = `Your child tasks have all stopped:\n${lines}\nUse their results. Continue a child with forge_followup on its task id, which keeps its agent; do not dispatch that work again under a new order_id.`;
+      if (parent.status === "running" || parent.status === "queued" || parent.status === "blocked" || parent.status === "paused") {
+        parent.pending.push(message);
+        this.persist(parent);
+        return;
+      }
+      this.persist(parent);
+      await this.followup(parentId, message);
+    } catch (err) {
+      this.addStep(parent, { kind: "error", text: `Could not report child tasks: ${(err as Error).message}` });
+      this.persist(parent);
+    } finally {
+      this.reporting.delete(parentId);
+    }
   }
 
   /** Automatic retries in a row at the end of the task's turns. */
@@ -1259,7 +1400,7 @@ export class Forge {
       case "running":
         if (idleSec !== undefined && idleSec >= this.config.stallWarnSec) {
           const tool = this.currentTool(task);
-          const limitMs = tool ? this.config.stallRecoverToolMs : this.config.stallRecoverMs;
+          const limitMs = this.silenceLimitMs(task, !!tool);
           if (task.status === "running" && limitMs > 0 && this.trailingAutoRetries(task) < this.config.autoRetry) {
             const doing = tool ? `its ${tool.tool} call (${truncate(tool.text, 120)}) has run ${tool.runningSec}s` : "no tool call is running";
             return `Worker has emitted nothing for ${idleSec}s; ${doing}. AgentForge restarts the turn on its own after ${Math.round(limitMs / 1000)}s of silence and continues with the progress so far. Keep waiting; do not forge_cancel or re-dispatch.`;
@@ -1273,8 +1414,17 @@ export class Forge {
           return `Worker is still exploring: ${this.toolCalls(task)} tool calls and no edits yet${task.nudgedAt ? "; AgentForge already told it to start implementing" : ""}. If it stays this way, forge_followup with the exact files and line ranges to change.`;
         }
         return "Worker is busy. Use forge_wait to block until it finishes, or forge_followup to steer it.";
-      case "paused":
-        return "The user paused this task on the board. Do not re-dispatch or retry it; it resumes from the board, or with forge_retry only if the user asks.";
+      case "paused": {
+        const recovered = task.turns.at(-1)?.status === "interrupted";
+        const files = task.touched?.length ? ` Files already changed: ${task.touched.slice(0, 8).join(", ")}.` : "";
+        return recovered
+          ? `The backend restarted while this task was running. Continue resumes the same agent; do not re-dispatch.${files}`
+          : "The user paused this task on the board. Do not re-dispatch or retry it; it resumes from the board, or with forge_retry only if the user asks.";
+      }
+      case "blocked":
+        return task.hold?.kind === "question"
+          ? `The worker asked: ${task.hold.text} Answer with forge_followup on this task. Do not re-dispatch or forge_retry.`
+          : `The worker is blocked: ${task.hold?.text ?? "it needs a decision"}. Resolve it with forge_followup on this task. Do not re-dispatch or forge_retry.`;
       case "finished":
         return "Turn finished. Review with forge_result, then forge_accept (optionally with verify_command) or forge_followup to request changes.";
       case "error":

@@ -16,6 +16,10 @@ export interface BriefInput {
 
 /** The marker a worker ends a slice with; its absence means the task is done. */
 export const NEXT_MARKER = "NEXT:";
+/** Last line when the worker cannot continue without a decision. AgentForge stops and does not retry. */
+export const BLOCKED_MARKER = "BLOCKED:";
+/** Last line when the worker needs the user to answer one question. */
+export const ASK_MARKER = "ASK:";
 
 const NOTES = path.join(".agentforge", "worker.md");
 
@@ -61,6 +65,8 @@ export function buildBrief(input: BriefInput): string {
       "- Prefer several small edits over one large rewrite, and check an edit's result before building on it.",
       "- Read only what the change needs (the files named in the task or context first), then make the first edit; look things up as you go instead of studying everything up front.",
       "- If something blocks you or the task is ambiguous, stop and explain what you need instead of guessing.",
+      `- When you cannot continue without a decision, end the turn with a last line \`${BLOCKED_MARKER} <what you need>\`. AgentForge stops and does not retry.`,
+      `- When you need the user to answer one question, end with a last line \`${ASK_MARKER} <the question>\`. The answer comes back as your next message.`,
       ...(input.slices
         ? [
             "",
@@ -89,6 +95,16 @@ export function nextSlice(result: string | undefined): string | undefined {
   return last.slice(NEXT_MARKER.length).trim() || "the next slice";
 }
 
+/** A BLOCKED: or ASK: last line; anything else, including NEXT:, is not a hold. */
+export function workerHold(result: string | undefined): { kind: "blocked" | "question"; text: string } | undefined {
+  const last = (result ?? "").trim().split("\n").map((l) => l.trim()).filter(Boolean).at(-1);
+  if (!last) return undefined;
+  const upper = last.toUpperCase();
+  if (upper.startsWith(ASK_MARKER)) return { kind: "question", text: last.slice(ASK_MARKER.length).trim() || "The worker asked a question." };
+  if (upper.startsWith(BLOCKED_MARKER)) return { kind: "blocked", text: last.slice(BLOCKED_MARKER.length).trim() || "The worker is blocked." };
+  return undefined;
+}
+
 export function buildContinuePrompt(next: string): string {
   return `Continue with the next slice: ${next}\nEnd this turn the same way: a short note and \`${NEXT_MARKER} ...\` if work remains, else the final report.`;
 }
@@ -101,6 +117,20 @@ export interface ResumeState {
   recent: string[];
   /** What the cut-off turn was doing: its prompt. */
   prompt: string;
+}
+
+/** Starts a fresh agent on a long task: the files on disk stay, the previous session's text does not. */
+export function buildHandoffPrompt(state: ResumeState & { remaining: string }): string {
+  const remaining = state.remaining.length > 800 ? `${state.remaining.slice(0, 800)}…` : state.remaining;
+  const parts = [
+    "You are a new agent taking over this task. The previous session was long, so it was closed. The files on disk are the source of truth; do not redo finished work.",
+    `Continue from here:\n${remaining}`,
+  ];
+  if (state.touched.length) parts.push(`Files already edited:\n${state.touched.map((f) => `- ${f}`).join("\n")}`);
+  if (state.diffStat.trim()) parts.push(`git diff --stat against the start of the task:\n\`\`\`\n${state.diffStat.trim()}\n\`\`\``);
+  if (state.recent.length) parts.push(`Last completed steps:\n${state.recent.map((s) => `- ${s}`).join("\n")}`);
+  parts.push(`Carry on. If work remains after this turn, end with \`${NEXT_MARKER} ...\` as usual.`);
+  return parts.join("\n\n");
 }
 
 /** Continues a turn a connection error cut off, with what AgentForge saw done so the worker need not re-read it. */

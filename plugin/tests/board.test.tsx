@@ -402,6 +402,22 @@ test("each task row offers the controls its status allows", async ($, on) => {
   await ui.unmount();
 });
 
+test("a blocked task shows the question and a paused task shows the files already changed", async ($, on) => {
+  backend(on, {
+    tasks: [
+      { ...taskRow("q", "Needs a name", "blocked"), orderStatus: "blocked", hold: { kind: "question", text: "which file?" } },
+      { ...taskRow("p", "Cut off", "paused"), touched: ["src/a.ts"] },
+    ],
+  });
+  await openBoard($);
+  const ui = await $.ui.mount({ ...PANE, surface: "terminal" });
+  expect((await ui.find({ type: "Text", text: /ASK: which file/ }))?.text).toBeDefined();
+  expect((await ui.find({ type: "Text", text: /changed: src\/a\.ts/ }))?.text).toBeDefined();
+  expect(await ui.find({ key: "task-cancel-q" })).toBeDefined();
+  expect(await ui.find({ key: "task-resume-q" })).toBeUndefined();
+  await ui.unmount();
+});
+
 test("deleting a task or clearing finished ones asks to confirm first", async ($, on) => {
   const b = backend(on, { tasks: [taskRow("a", "Runs", "running"), taskRow("c", "Done", "finished"), taskRow("d", "Also done", "cancelled")] });
   await openBoard($);

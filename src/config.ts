@@ -113,6 +113,12 @@ export interface ForgeConfig {
   briefWarnChars: number;
   /** Briefs longer than this are refused; 0 disables. */
   briefMaxChars: number;
+  /** Completed tool calls in the current agent session after which the next turn starts on a new agent; 0 disables. */
+  handoffSteps: number;
+  /** Tokens reported in the current session after which the next turn starts on a new agent; 0 disables. */
+  handoffTokens: number;
+  /** Model used for a turn that is retried because it went silent. Empty keeps the task's model. */
+  backupModel?: string;
   /** Editor command that opens a new task's progress page; undefined disables. */
   openProgress?: string;
   /** Port of the read-only monitor page the backend serves; 0 disables. */
@@ -148,6 +154,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ForgeConfig {
     exploreNudgeMs: intEnv(env, "EXPLORE_NUDGE_MINUTES", 10) * 60_000,
     briefWarnChars: intEnv(env, "BRIEF_WARN_CHARS", 4000),
     briefMaxChars: intEnv(env, "BRIEF_MAX_CHARS", 8000),
+    handoffSteps: intEnv(env, "HANDOFF_STEPS", 40),
+    handoffTokens: intEnv(env, "HANDOFF_TOKENS", 80_000),
+    backupModel: setting(env, "BACKUP_MODEL"),
     openProgress: openProgress(envVar(env, "OPEN_PROGRESS")),
     monitorPort: intEnv(env, "MONITOR_PORT", 18862),
     mcpConfigPath: envVar(env, "MCP_CONFIG") ?? path.join(home, "mcp.json"),
